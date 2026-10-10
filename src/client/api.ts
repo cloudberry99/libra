@@ -6,7 +6,7 @@ export class ApiError extends Error {
     super(message);
   }
 }
-export async function api<T>(path: string, method = 'GET', body?: unknown): Promise<T> {
+export async function api<T>(path: string, method = 'GET', body?: unknown, retried = false): Promise<T> {
   let response: Response;
   try {
     response = await fetch(path, {
@@ -32,6 +32,19 @@ export async function api<T>(path: string, method = 'GET', body?: unknown): Prom
     throw new ApiError('服务返回了无效响应，请稍后重试', response.status);
   }
   if (!response.ok) {
+    if (
+      !retried &&
+      response.status === 429 &&
+      data &&
+      typeof data === 'object' &&
+      'code' in data &&
+      data.code === 'KV_WRITE_RATE_LIMIT'
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 1100));
+      // Retry once with the original record/catalog revisions. Never fetch a
+      // fresh revision to force a stale edit past conflict checks.
+      return api<T>(path, method, body, true);
+    }
     const message =
       data && typeof data === 'object' && 'error' in data && typeof data.error === 'string'
         ? data.error

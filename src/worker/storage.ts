@@ -1,22 +1,76 @@
-import { seal, unseal } from './crypto';
+import { digest, random, seal, unseal } from './crypto';
 import type { IconLibrary, ServerRecord } from '../shared/types';
 import { InputError } from '../shared/validation';
 import { defaultIconLibraries, ICON_LIBRARIES_KEY } from './icon-libraries';
 
 export const SERVER_CATALOG_KEY = 'catalog:servers:v1';
+export const EMBY_DEVICE_KEY = 'settings:emby-device:v1';
 export class StorageBusyError extends Error {
   name = 'StorageBusyError';
+}
+export interface Catalog<T> {
+  revision: string;
+  items: T[];
+}
+function writeThrottled(error: unknown, depth = 0): boolean {
+  if (!error || typeof error !== 'object' || depth > 2) return false;
+  const value = error as {
+    status?: unknown;
+    statusCode?: unknown;
+    code?: unknown;
+    cause?: unknown;
+    message?: unknown;
+  };
+  return (
+    [value.status, value.statusCode, value.code].some((code) => code === 429 || code === '429') ||
+    writeThrottled(value.cause, depth + 1) ||
+    (typeof value.message === 'string' && /KV PUT failed: 429\b/.test(value.message))
+  );
 }
 
 export class Store {
   constructor(private env: Env) {}
+  async embyDeviceId(): Promise<string> {
+    const saved = await this.get<{ deviceId: string }>(EMBY_DEVICE_KEY);
+    if (saved !== null) {
+      if (
+        typeof saved.deviceId !== 'string' ||
+        !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(saved.deviceId)
+      )
+        throw new Error('Invalid stored Emby device identifier');
+      return saved.deviceId;
+    }
+    const deviceId = crypto.randomUUID();
+    await this.put(EMBY_DEVICE_KEY, { deviceId });
+    return deviceId;
+  }
+  async initializeCatalogs(): Promise<void> {
+    // Only first-time setup calls this, never a dashboard/catalog read.
+    if ((await this.get(ICON_LIBRARIES_KEY)) === null) await this.saveIconLibraries(defaultIconLibraries());
+    if ((await this.get(SERVER_CATALOG_KEY)) === null)
+      await this.saveServers(await this.list<ServerRecord>('server:'));
+  }
+  private async catalog<T>(key: string, fallback: () => Promise<T[]>): Promise<Catalog<T>> {
+    const value = await this.get<Catalog<T> | T[]>(key);
+    if (value !== null && !Array.isArray(value)) {
+      if (typeof value.revision !== 'string' || !Array.isArray(value.items))
+        throw new Error('Invalid catalog');
+      return value;
+    }
+    const items = value ?? (await fallback());
+    // Deterministic revision for pre-envelope data; GET never migrates or seeds.
+    return { revision: await digest(JSON.stringify(items)), items };
+  }
+  async iconLibraryCatalog(): Promise<Catalog<IconLibrary>> {
+    return this.catalog(ICON_LIBRARIES_KEY, async () => []);
+  }
   async iconLibraries(): Promise<IconLibrary[]> {
-    const saved = await this.get<IconLibrary[]>(ICON_LIBRARIES_KEY);
-    // An empty list means the user removed every library; never re-seed it.
-    if (saved !== null) return saved;
-    const defaults = defaultIconLibraries();
-    await this.put(ICON_LIBRARIES_KEY, defaults);
-    return defaults;
+    return (await this.iconLibraryCatalog()).items;
+  }
+  async saveIconLibraries(items: IconLibrary[]): Promise<string> {
+    const revision = random(16);
+    await this.put(ICON_LIBRARIES_KEY, { revision, items });
+    return revision;
   }
   async get<T>(key: string): Promise<T | null> {
     const value = await this.env.LIBRA_KV.get(key);
@@ -28,7 +82,7 @@ export class Store {
       await this.env.LIBRA_KV.put(key, encrypted, ttl ? { expirationTtl: ttl } : undefined);
     } catch (error) {
       // KV allows only one write per key per second. Do not retry a stale snapshot.
-      if (error instanceof Error && /KV PUT failed: 429\b/.test(error.message)) throw new StorageBusyError();
+      if (writeThrottled(error)) throw new StorageBusyError();
       throw error;
     }
   }
@@ -68,22 +122,27 @@ export class Store {
   async list<T>(prefix: string): Promise<T[]> {
     return (await this.getMany<T>(await this.keys(prefix))).filter((row): row is T => row !== null);
   }
-  async servers(migrate = false): Promise<ServerRecord[]> {
-    const catalog = await this.get<ServerRecord[]>(SERVER_CATALOG_KEY);
-    // An empty catalog is authoritative too: never resurrect deleted legacy rows.
-    if (catalog !== null) return catalog;
-    const legacy = await this.list<ServerRecord>('server:');
-    // Only authenticated admin loads migrate. Public requests remain read-only.
-    // Leave legacy ciphertext untouched as an upgrade backup; it is no longer read
-    // once the catalog exists. Like all KV mutations, migration assumes one writer.
-    if (migrate) await this.saveServers(legacy);
-    return legacy;
+  async serverCatalog(): Promise<Catalog<ServerRecord>> {
+    const catalog = await this.catalog(SERVER_CATALOG_KEY, () => this.list<ServerRecord>('server:'));
+    return {
+      ...catalog,
+      items: catalog.items.map((server) => {
+        if (!server.config.logo || !/^http:\/\//i.test(server.config.logo)) return server;
+        const { logo: _legacyLogo, ...config } = server.config;
+        return { ...server, config };
+      }),
+    };
   }
-  async saveServers(servers: ServerRecord[]): Promise<void> {
+  async servers(): Promise<ServerRecord[]> {
+    return (await this.serverCatalog()).items;
+  }
+  async saveServers(servers: ServerRecord[]): Promise<string> {
     // Leave ample headroom under KV's 25 MiB value and Workers' memory limits,
     // including Base64 encryption overhead and temporary serialization buffers.
     if (new TextEncoder().encode(JSON.stringify(servers)).byteLength > 8 * 1024 * 1024)
       throw new InputError('服务器配置总大小不能超过 8 MiB，请缩短过长的备注或线路地址');
-    await this.put(SERVER_CATALOG_KEY, servers);
+    const revision = random(16);
+    await this.put(SERVER_CATALOG_KEY, { revision, items: servers });
+    return revision;
   }
 }

@@ -8,9 +8,13 @@ export function Toast({ message }: { message: string }) {
   useEffect(() => {
     const node = ref.current;
     if (!node || !supportsPopover) return;
-    // Reopen to move above an already open dialog in the browser's top layer.
-    if (node.matches(':popover-open')) node.hidePopover();
-    if (message) node.showPopover();
+    const raise = () => {
+      if (node.matches(':popover-open')) node.hidePopover();
+      if (message) node.showPopover();
+    };
+    raise();
+    window.addEventListener('libra:modal-open', raise);
+    return () => window.removeEventListener('libra:modal-open', raise);
   }, [message, supportsPopover]);
   return createPortal(
     <div

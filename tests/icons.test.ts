@@ -9,15 +9,23 @@ import {
   ICON_LIBRARIES_KEY,
   MAX_ICON_CATALOG_BYTES,
 } from '../src/worker/icon-libraries';
-import { githubContentURL, githubRequestHeaders } from '../src/worker/github';
+import {
+  githubContentURL,
+  githubRawURL,
+  githubRequestHeaders,
+  verifyGitHubToken,
+} from '../src/worker/github';
 import { Store } from '../src/worker/storage';
 import { memoryStorage } from './helpers/storage';
 
 const catalog = { icons: [{ name: '家庭影院', url: 'https://icons.example.com/home.png' }] };
 
-test('library migration seeds once, preserves edits and never restores removed defaults', async () => {
+test('explicit setup seeds libraries once, preserves edits and never restores removed defaults', async () => {
   const { env, values } = memoryStorage();
   const store = new Store(env);
+  assert.deepEqual(await store.iconLibraries(), []);
+  assert.equal(values.size, 0, 'reading an absent catalog cannot seed defaults');
+  await store.initializeCatalogs();
   const defaults = await store.iconLibraries();
   assert.deepEqual(
     defaults.map(({ name, url }) => ({ name, url })),
@@ -28,6 +36,7 @@ test('library migration seeds once, preserves edits and never restores removed d
   await store.put(ICON_LIBRARIES_KEY, changed);
   assert.deepEqual(await new Store(env).iconLibraries(), changed);
   await store.put(ICON_LIBRARIES_KEY, []);
+  await store.initializeCatalogs();
   assert.deepEqual(await new Store(env).iconLibraries(), []);
 });
 
@@ -168,6 +177,92 @@ test('GitHub repository redirects retain read-only authentication and raw conten
   assert.equal(calls, 2);
 });
 
+test('slash refs, expired tokens and API throttling fall back to the original public raw URL without credentials', async (t) => {
+  for (const source of [
+    'https://raw.githubusercontent.com/owner/repo/feature/x/icons.json',
+    'https://raw.githubusercontent.com/owner/repo/refs/heads/feature/x/icons.json',
+    'https://github.com/owner/repo/blob/feature/x/icons.json',
+    'https://api.github.com/repos/owner/repo/contents/icons.json?ref=feature%2Fx',
+  ])
+    for (const status of [401, 403, 404]) {
+      await t.test(`${status} ${source}`, async (child) => {
+        let calls = 0;
+        child.mock.method(globalThis, 'fetch', async (input: string | URL | Request, init?: RequestInit) => {
+          calls++;
+          const headers = new Headers(init?.headers);
+          if (calls === 1) {
+            assert.equal(String(input), githubContentURL(source));
+            assert.equal(headers.get('Authorization'), 'Bearer secret');
+            return new Response('private error details', { status });
+          }
+          assert.equal(String(input), githubRawURL(source));
+          assert.equal(headers.get('Authorization'), null);
+          assert.equal(headers.get('Cookie'), null);
+          return Response.json(catalog);
+        });
+        assert.deepEqual(await fetchIconCatalog(source, 'secret'), { ...catalog, skipped: 0 });
+        assert.equal(calls, 2);
+      });
+    }
+});
+
+test('an inaccessible private library reports the token problem after a bounded anonymous fallback', async (t) => {
+  const calls: string[] = [];
+  t.mock.method(globalThis, 'fetch', async (input: string | URL | Request, init?: RequestInit) => {
+    calls.push(String(input));
+    if (calls.length > 1) assert.equal(new Headers(init?.headers).get('Authorization'), null);
+    return new Response('do-not-expose-token-or-body', { status: calls.length === 1 ? 401 : 404 });
+  });
+  await assert.rejects(fetchIconCatalog(DEFAULT_ICON_LIBRARIES[0].url, 'secret'), {
+    message: 'GitHub Token 无效或已过期，且匿名读取图库失败，请更新 Token',
+  });
+  assert.equal(calls.length, 2);
+});
+
+test('token verification stays on the official API and never follows redirects or leaks bodies', async (t) => {
+  for (const status of [200, 401, 302, 403, 500]) {
+    await t.test(String(status), async (child) => {
+      const fetcher = child.mock.method(
+        globalThis,
+        'fetch',
+        async (input: string | URL | Request, init?: RequestInit) => {
+          assert.equal(String(input), 'https://api.github.com/user');
+          assert.equal(new Headers(init?.headers).get('Authorization'), 'Bearer private-token');
+          assert.equal(init?.redirect, 'manual');
+          return new Response('private-upstream-details', {
+            status,
+            headers: { Location: 'https://evil.example/' },
+          });
+        },
+      );
+      if (status === 200) await verifyGitHubToken('private-token');
+      else
+        await assert.rejects(verifyGitHubToken('private-token'), {
+          message:
+            status === 401
+              ? 'GitHub Token 无效或已过期'
+              : 'GitHub 暂时无法验证此 Token，请检查权限或稍后重试',
+        });
+      assert.equal(fetcher.mock.callCount(), 1);
+    });
+  }
+});
+
+test('token verification is bounded by a timeout', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  t.mock.method(
+    globalThis,
+    'fetch',
+    (_input: unknown, init: RequestInit) =>
+      new Promise<Response>((_, reject) =>
+        init.signal!.addEventListener('abort', () => reject(new Error('aborted'))),
+      ),
+  );
+  const result = assert.rejects(verifyGitHubToken('private-token'), /无法连接 GitHub/);
+  t.mock.timers.tick(8_000);
+  await result;
+});
+
 test('catalog downloads bound streamed bytes and report malformed JSON without leaking response bodies', async (t) => {
   let scenario = 0;
   let cancelled = false;
@@ -193,10 +288,11 @@ test('catalog downloads bound streamed bytes and report malformed JSON without l
   await assert.rejects(fetchIconCatalog('https://icons.example.com/list.json'), {
     message: '图标库返回的内容不是有效 JSON',
   });
-  await assert.rejects(fetchIconCatalog(DEFAULT_ICON_LIBRARIES[0].url, 'secret'), {
+  const noRawFallback = 'https://api.github.com/repositories/123/contents/icons.json';
+  await assert.rejects(fetchIconCatalog(noRawFallback, 'secret'), {
     message: 'GitHub Token 无效或已过期，请在图标库设置中更新',
   });
-  await assert.rejects(fetchIconCatalog(DEFAULT_ICON_LIBRARIES[0].url, 'secret'), /额度已用尽/);
+  await assert.rejects(fetchIconCatalog(noRawFallback, 'secret'), /额度已用尽/);
 });
 
 test('a stalled catalog request is aborted and reported as a timeout', async (t) => {

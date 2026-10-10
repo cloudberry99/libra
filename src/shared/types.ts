@@ -2,6 +2,10 @@ export interface Endpoint {
   url: string;
   name?: string;
 }
+export interface DiscoveredLines {
+  lines: Endpoint[];
+  skipped: number;
+}
 export interface ServerConfig {
   type: 'emby';
   name?: string;
@@ -34,7 +38,9 @@ export interface DashboardData {
   servers: ServerRecord[];
   subscriptions: Subscription[];
   iconLibraries: IconLibrary[];
+  revisions: { servers: string; iconLibraries: string };
 }
+export type CatalogWrite<T> = T & { catalogRevision: string };
 export interface IconLibrary {
   id: string;
   name: string;

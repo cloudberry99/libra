@@ -1,6 +1,41 @@
 import { InputError } from '../shared/validation';
 
 export const GITHUB_SETTINGS_KEY = 'settings:github:v1';
+export class GitHubTokenError extends Error {
+  name = 'GitHubTokenError';
+  constructor(
+    message: string,
+    public status = 422,
+  ) {
+    super(message);
+  }
+}
+
+export async function verifyGitHubToken(token: string): Promise<void> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8_000);
+  try {
+    const response = await fetch('https://api.github.com/user', {
+      headers: {
+        Accept: 'application/vnd.github+json',
+        'User-Agent': 'Libra-Icon-Libraries',
+        'X-GitHub-Api-Version': '2026-03-10',
+        Authorization: `Bearer ${token}`,
+      },
+      redirect: 'manual',
+      signal: controller.signal,
+    });
+    await response.body?.cancel();
+    if (response.status === 401) throw new GitHubTokenError('GitHub Token 无效或已过期');
+    if (response.status !== 200)
+      throw new GitHubTokenError('GitHub 暂时无法验证此 Token，请检查权限或稍后重试');
+  } catch (error) {
+    if (error instanceof GitHubTokenError) throw error;
+    throw new GitHubTokenError('无法连接 GitHub 验证 Token，请稍后重试', 502);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 export interface GitHubSettings {
   token?: string;
   version: string;
@@ -45,6 +80,21 @@ export function githubContentURL(source: string): string | null {
   } catch {
     return null;
   }
+}
+
+/** Preserve the original ref/path boundary, which is ambiguous for slash refs. */
+export function githubRawURL(source: string): string | null {
+  const url = new URL(source);
+  if (url.hostname === 'raw.githubusercontent.com') return url.href;
+  if (url.hostname === 'github.com' && /^\/[^/]+\/[^/]+\/(blob|raw)\/.+/.test(url.pathname)) {
+    url.hostname = 'raw.githubusercontent.com';
+    url.pathname = url.pathname.replace(/^(\/[^/]+\/[^/]+)\/(?:blob|raw)\//, '$1/');
+    return url.href;
+  }
+  const match = isGitHubContentAPI(url) && url.pathname.match(/^\/repos\/([^/]+)\/([^/]+)\/contents\/(.+)$/);
+  if (match)
+    return `https://raw.githubusercontent.com/${match[1]}/${match[2]}/${encodeURIComponent(url.searchParams.get('ref') || 'HEAD')}/${match[3]}`;
+  return null;
 }
 
 export function githubRequestHeaders(url: string, token?: string): Record<string, string> {

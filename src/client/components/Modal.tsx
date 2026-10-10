@@ -18,6 +18,7 @@ export function Modal({
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     ref.current?.showModal();
+    window.dispatchEvent(new Event('libra:modal-open'));
     document.body.classList.add('modal-open');
     return () => {
       document.body.classList.remove('modal-open');

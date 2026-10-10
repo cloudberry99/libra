@@ -2,7 +2,13 @@ import type { IconCatalog, IconLibrary } from '../shared/types';
 import { iconLibraryURL, parseIconCatalog } from '../shared/icons';
 import { InputError } from '../shared/validation';
 import { digest, random } from './crypto';
-import { githubContentURL, githubRequestHeaders, isGitHubContentAPI, type GitHubSettings } from './github';
+import {
+  githubContentURL,
+  githubRawURL,
+  githubRequestHeaders,
+  isGitHubContentAPI,
+  type GitHubSettings,
+} from './github';
 
 export const ICON_LIBRARIES_KEY = 'catalog:icon-libraries:v1';
 export const MAX_ICON_CATALOG_BYTES = 2 * 1024 * 1024;
@@ -49,11 +55,14 @@ export async function fetchIconCatalog(source: string, token?: string): Promise<
     let url = iconLibraryURL(source);
     const githubURL = githubContentURL(url);
     const githubToken = githubURL ? token : undefined;
+    const rawFallback = githubRawURL(url);
+    let usedFallback = false;
+    let fallbackError: IconCatalogError | undefined;
     if (githubURL && (token || new URL(url).hostname === 'github.com')) url = githubURL;
     for (let redirects = 0; redirects <= 3; redirects++) {
       // Construct a new request: never forward admin cookies, headers or credentials.
       const response = await fetch(url, {
-        headers: githubRequestHeaders(url, githubToken),
+        headers: githubRequestHeaders(url, usedFallback ? undefined : githubToken),
         redirect: 'manual',
         signal: controller.signal,
       });
@@ -67,6 +76,16 @@ export async function fetchIconCatalog(source: string, token?: string): Promise<
       if (!response.ok) {
         await response.body?.cancel();
         if (isGitHubContentAPI(new URL(url))) {
+          if ([401, 403, 404].includes(response.status) && rawFallback && !usedFallback) {
+            fallbackError = new IconCatalogError(
+              response.status === 401
+                ? 'GitHub Token 无效或已过期，且匿名读取图库失败，请更新 Token'
+                : 'GitHub 图库无法读取，请检查文件地址和 Token 的读取权限',
+            );
+            url = iconLibraryURL(rawFallback);
+            usedFallback = true;
+            continue;
+          }
           if (response.status === 401)
             throw new IconCatalogError('GitHub Token 无效或已过期，请在图标库设置中更新');
           if (response.headers.get('X-RateLimit-Remaining') === '0')
@@ -74,7 +93,7 @@ export async function fetchIconCatalog(source: string, token?: string): Promise<
           if ([403, 404].includes(response.status))
             throw new IconCatalogError('GitHub 图库无法读取，请检查文件地址和 Token 的读取权限');
         }
-        throw new IconCatalogError(`图标库暂时无法访问（HTTP ${response.status}）`);
+        throw fallbackError ?? new IconCatalogError(`图标库暂时无法访问（HTTP ${response.status}）`);
       }
       if (Number(response.headers.get('Content-Length')) > MAX_ICON_CATALOG_BYTES) {
         await response.body?.cancel();
@@ -147,6 +166,7 @@ export async function cachedIconCatalog(
   origin: string,
   refresh = false,
   github?: GitHubSettings | null,
+  onCache?: (status: 'HIT' | 'MISS') => void,
 ): Promise<IconCatalog> {
   const cache = await caches.open('libra-icon-catalogs-v1');
   const key = new Request(
@@ -154,8 +174,12 @@ export async function cachedIconCatalog(
   );
   if (!refresh) {
     const cached = await cache.match(key);
-    if (cached) return cached.json();
+    if (cached) {
+      onCache?.('HIT');
+      return cached.json();
+    }
   }
+  onCache?.('MISS');
   const catalog = await fetchIconCatalog(source, github?.token);
   // Only normalized icon metadata is cached, never admin/server data or upstream headers.
   await cache.put(

@@ -2,9 +2,24 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import './helpers/webcrypto';
 import { digest, seal, unseal } from '../src/worker/crypto';
-import { Store, SERVER_CATALOG_KEY } from '../src/worker/storage';
+import { Store, StorageBusyError, SERVER_CATALOG_KEY, EMBY_DEVICE_KEY } from '../src/worker/storage';
+import { ICON_LIBRARIES_KEY } from '../src/worker/icon-libraries';
 import app from '../src/worker/index';
 import { legacySeal, legacyServer, memoryStorage } from './helpers/storage';
+
+test('one random Emby device ID is encrypted and survives new Store instances and configuration changes', async () => {
+  const { env, values } = memoryStorage();
+  const first = await new Store(env).embyDeviceId();
+  assert.match(first, /^[a-f0-9-]{36}$/);
+  const ciphertext = values.get(EMBY_DEVICE_KEY)!;
+  assert.equal(ciphertext.includes(first), false);
+  await new Store(env).saveServers([legacyServer]);
+  assert.equal(await new Store(env).embyDeviceId(), first);
+  assert.equal(values.get(EMBY_DEVICE_KEY), ciphertext, 'reads must never regenerate or rewrite the ID');
+  assert.notEqual(await new Store(memoryStorage().env).embyDeviceId(), first);
+  await new Store(env).put(EMBY_DEVICE_KEY, { deviceId: 'damaged' });
+  await assert.rejects(new Store(env).embyDeviceId(), /Invalid stored/);
+});
 
 test('v1 data migrates without changing credentials; deleting all servers never restores legacy records', async () => {
   const { env, values, reads, lists } = memoryStorage();
@@ -15,7 +30,7 @@ test('v1 data migrates without changing credentials; deleting all servers never 
   const store = new Store(env);
   assert.deepEqual(await store.servers(), [legacyServer]);
   assert.equal(values.has(SERVER_CATALOG_KEY), false, 'public reads cannot migrate');
-  assert.deepEqual(await store.servers(true), [legacyServer]);
+  await store.saveServers(await store.servers());
   assert.equal(JSON.parse(values.get(SERVER_CATALOG_KEY)!).v, 2);
   assert.equal(values.get(key), legacy, 'preserve the encrypted upgrade backup');
   reads.length = 0;
@@ -24,7 +39,84 @@ test('v1 data migrates without changing credentials; deleting all servers never 
   assert.deepEqual(reads, [[SERVER_CATALOG_KEY]]);
   assert.deepEqual(lists, []);
   await store.saveServers([]);
-  assert.deepEqual(await store.servers(true), []);
+  assert.deepEqual(await store.servers(), []);
+});
+
+test('catalog reads never migrate or seed, even when KV returns a cached missing value', async (t) => {
+  const { env, kv, values } = memoryStorage();
+  const store = new Store(env);
+  await store.initializeCatalogs();
+  await store.saveServers([legacyServer]);
+  const original = new Map(values);
+  const get = kv.get.bind(kv);
+  t.mock.method(kv, 'get', async (key: string | string[]) =>
+    key === SERVER_CATALOG_KEY || key === ICON_LIBRARIES_KEY ? null : get(key),
+  );
+  const writes = t.mock.method(kv, 'put');
+  assert.deepEqual(await store.servers(), []);
+  assert.deepEqual(await store.iconLibraries(), []);
+  assert.equal(writes.mock.callCount(), 0);
+  assert.deepEqual(values, original);
+});
+
+test('old array catalogs have stable revisions until an explicit write; HTTP logos are removed on all reads', async () => {
+  const { env, values } = memoryStorage();
+  const store = new Store(env);
+  const old = { ...legacyServer, config: { ...legacyServer.config, logo: 'http://old.example/logo.png' } };
+  await store.put(SERVER_CATALOG_KEY, [old]);
+  const encrypted = values.get(SERVER_CATALOG_KEY);
+  const before = await store.serverCatalog();
+  assert.deepEqual(before.items, [legacyServer]);
+  assert.equal((await new Store(env).serverCatalog()).revision, before.revision);
+  assert.equal(values.get(SERVER_CATALOG_KEY), encrypted, 'GET does not write a snapshot back to KV');
+  const revision = await store.saveServers(before.items);
+  assert.notEqual(revision, before.revision);
+  assert.equal((await store.serverCatalog()).revision, revision);
+  // Public feed uses the same sanitization, even before a write/upgrade.
+  await store.put(SERVER_CATALOG_KEY, [old]);
+  const slug = 'LegacyLogoTest1234';
+  await store.put(`route:${await digest(slug)}`, { id: 'logo-sub' });
+  await store.put('sub:logo-sub', { id: 'logo-sub', slug, enabled: true, allServers: true });
+  const feed = await app.fetch(new Request(`https://libra.test/${slug}`), env);
+  assert.deepEqual(await feed.json(), [legacyServer.config]);
+});
+
+test('a fresh client revision is rejected when the Worker sees an older KV catalog', async (t) => {
+  const { env, kv, values } = memoryStorage();
+  const store = new Store(env);
+  await store.put('admin', { version: 'admin-v1' });
+  const token = 'a'.repeat(64);
+  await store.put(`session:${await digest(token)}`, {
+    adminVersion: 'admin-v1',
+    expires: Date.now() + 60_000,
+  });
+  await store.saveServers([legacyServer]);
+  const staleValue = values.get(SERVER_CATALOG_KEY)!;
+  const freshRevision = await store.saveServers([legacyServer, { ...legacyServer, id: 'second' }]);
+  const latestValue = values.get(SERVER_CATALOG_KEY);
+  const get = kv.get.bind(kv);
+  t.mock.method(kv, 'get', async (key: string | string[]) =>
+    key === SERVER_CATALOG_KEY ? staleValue : get(key),
+  );
+  const response = await app.fetch(
+    new Request('https://libra.test/api/servers', {
+      method: 'POST',
+      headers: {
+        Origin: 'https://libra.test',
+        'Content-Type': 'application/json',
+        'X-Libra-Request': '1',
+        Cookie: `__Host-libra_session=${token}`,
+      },
+      body: JSON.stringify({ catalogRevision: freshRevision, config: legacyServer.config }),
+    }),
+    env,
+  );
+  assert.equal(response.status, 409);
+  assert.equal(
+    values.get(SERVER_CATALOG_KEY),
+    latestValue,
+    'the stale read must not overwrite the live catalog',
+  );
 });
 
 test('counts never fetch/decrypt values, and list uses batches of at most 100 with pagination', async () => {
@@ -140,4 +232,25 @@ test('KV write throttling has a short, recoverable retry message', async (t) => 
   assert.equal(response.status, 429);
   assert.equal(response.headers.get('Retry-After'), '1');
   assert.match(((await response.json()) as { error: string }).error, /保存过于频繁/);
+});
+
+test('KV throttling uses structured status and nested cause even when runtime wording changes', async (t) => {
+  for (const error of [
+    { status: 429, message: 'new wording' },
+    { statusCode: '429' },
+    { code: 429 },
+    new Error('wrapper', { cause: { status: 429 } }),
+  ]) {
+    const { env, kv } = memoryStorage();
+    t.mock.method(kv, 'put', async () => {
+      throw error;
+    });
+    await assert.rejects(new Store(env).put('key', {}), StorageBusyError);
+  }
+  const { env, kv } = memoryStorage();
+  const failure = new Error('another storage failure');
+  t.mock.method(kv, 'put', async () => {
+    throw failure;
+  });
+  await assert.rejects(new Store(env).put('key', {}), (error) => error === failure);
 });

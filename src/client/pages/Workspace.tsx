@@ -13,7 +13,13 @@ import {
   ShieldCheck,
   UserRound,
 } from 'lucide-react';
-import type { DashboardData, IconLibrary, ServerRecord, Subscription } from '../../shared/types';
+import type {
+  CatalogWrite,
+  DashboardData,
+  IconLibrary,
+  ServerRecord,
+  Subscription,
+} from '../../shared/types';
 import { Brand, Button, IconButton, Message } from '../components/ui';
 import { ServerEditor } from '../dialogs/ServerEditor';
 import { SubscriptionEditor } from '../dialogs/SubscriptionEditor';
@@ -36,7 +42,12 @@ import { Modal } from '../components/Modal';
 import { GitHubSettings } from '../dialogs/GitHubSettings';
 
 export function Workspace({ logout }: { logout: () => void }) {
-  const [data, setData] = useState<DashboardData>({ servers: [], subscriptions: [], iconLibraries: [] });
+  const [data, setData] = useState<DashboardData>({
+    servers: [],
+    subscriptions: [],
+    iconLibraries: [],
+    revisions: { servers: '', iconLibraries: '' },
+  });
   const [page, setPage] = useState<Page>('servers');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -75,9 +86,10 @@ export function Workspace({ logout }: { logout: () => void }) {
       if (toastTimer.current) clearTimeout(toastTimer.current);
     };
   }, []);
-  function saveServer(record: ServerRecord) {
+  function saveServer({ catalogRevision, ...record }: CatalogWrite<ServerRecord>) {
     setData((previous) => ({
       ...previous,
+      revisions: { ...previous.revisions, servers: catalogRevision },
       servers: previous.servers.some((item) => item.id === record.id)
         ? previous.servers.map((item) => (item.id === record.id ? record : item))
         : [...previous.servers, record],
@@ -93,9 +105,10 @@ export function Workspace({ logout }: { logout: () => void }) {
     }));
     notify('订阅链接已保存');
   }
-  function saveIconLibrary(record: IconLibrary) {
+  function saveIconLibrary({ catalogRevision, ...record }: CatalogWrite<IconLibrary>) {
     setData((previous) => ({
       ...previous,
+      revisions: { ...previous.revisions, iconLibraries: catalogRevision },
       iconLibraries: previous.iconLibraries.some((item) => item.id === record.id)
         ? previous.iconLibraries.map((item) => (item.id === record.id ? record : item))
         : [...previous.iconLibraries, record],
@@ -106,9 +119,10 @@ export function Workspace({ logout }: { logout: () => void }) {
     setBusyId(server.id);
     try {
       saveServer(
-        await api<ServerRecord>(`/api/servers/${server.id}`, 'PUT', {
+        await api<CatalogWrite<ServerRecord>>(`/api/servers/${server.id}`, 'PUT', {
           version: server.version,
           enabled: !server.enabled,
+          catalogRevision: data.revisions.servers,
         }),
       );
     } catch (error) {
@@ -304,6 +318,7 @@ export function Workspace({ logout }: { logout: () => void }) {
         <ServerEditor
           server={dialog.server}
           iconLibraries={data.iconLibraries}
+          catalogRevision={data.revisions.servers}
           close={() => setDialog(null)}
           save={saveServer}
         />
@@ -323,7 +338,13 @@ export function Workspace({ logout }: { logout: () => void }) {
           copy={(value) => void copy(value)}
         />
       )}
-      {dialog?.kind === 'json' && <JsonImport close={() => setDialog(null)} save={saveServer} />}
+      {dialog?.kind === 'json' && (
+        <JsonImport
+          close={() => setDialog(null)}
+          save={saveServer}
+          catalogRevision={data.revisions.servers}
+        />
+      )}
       {dialog?.kind === 'qr' && (
         <SubscriptionQR
           subscription={dialog.subscription}
@@ -334,7 +355,12 @@ export function Workspace({ logout }: { logout: () => void }) {
       {dialog?.kind === 'help' && <Help close={() => setDialog(null)} />}
       {dialog?.kind === 'githubSettings' && <GitHubSettings close={() => setDialog(null)} notify={notify} />}
       {dialog?.kind === 'iconLibrary' && (
-        <IconLibraryEditor library={dialog.library} close={() => setDialog(null)} save={saveIconLibrary} />
+        <IconLibraryEditor
+          library={dialog.library}
+          close={() => setDialog(null)}
+          save={saveIconLibrary}
+          catalogRevision={data.revisions.iconLibraries}
+        />
       )}
       {dialog?.kind === 'browseIcons' && (
         <Modal title={dialog.library.name} close={() => setDialog(null)} wide>
@@ -353,12 +379,18 @@ export function Workspace({ logout }: { logout: () => void }) {
           description="删除后，这个图库将从选择列表中移除。已经保存的服务器 Logo 不受影响。"
           close={() => setDialog(null)}
           confirm={async () => {
-            await api(`/api/icon-libraries/${dialog.library.id}`, 'DELETE', {
-              version: dialog.library.version,
-            });
+            const result = await api<{ catalogRevision: string }>(
+              `/api/icon-libraries/${dialog.library.id}`,
+              'DELETE',
+              {
+                version: dialog.library.version,
+                catalogRevision: data.revisions.iconLibraries,
+              },
+            );
             setData((previous) => ({
               ...previous,
               iconLibraries: previous.iconLibraries.filter((item) => item.id !== dialog.library.id),
+              revisions: { ...previous.revisions, iconLibraries: result.catalogRevision },
             }));
             notify('图标库已删除');
           }}
@@ -370,10 +402,15 @@ export function Workspace({ logout }: { logout: () => void }) {
           description="这台服务器会从工作台和后续订阅响应中移除。已经导入到播放器的配置不会被删除。"
           close={() => setDialog(null)}
           confirm={async () => {
-            await api(`/api/servers/${dialog.server.id}`, 'DELETE', { version: dialog.server.version });
+            const result = await api<{ catalogRevision: string }>(
+              `/api/servers/${dialog.server.id}`,
+              'DELETE',
+              { version: dialog.server.version, catalogRevision: data.revisions.servers },
+            );
             setData((previous) => ({
               ...previous,
               servers: previous.servers.filter((item) => item.id !== dialog.server.id),
+              revisions: { ...previous.revisions, servers: result.catalogRevision },
             }));
             notify('服务器已删除');
           }}

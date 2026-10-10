@@ -2,7 +2,8 @@ import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { Check, ChevronLeft, ChevronRight, Image, RefreshCw } from 'lucide-react';
 import type { IconCatalog, IconLibrary, LibraryIcon } from '../../shared/types';
 import { searchIcons } from '../../shared/icons';
-import { api, errorMessage } from '../api';
+import { errorMessage } from '../api';
+import { cachedIcons, invalidateIconCatalog, libraryKey, loadIcons } from '../icon-cache';
 import { Button, IconButton, Message, Spinner } from './ui';
 
 export function IconImage({ url }: { url: string }) {
@@ -35,7 +36,13 @@ export function IconImage({ url }: { url: string }) {
 
 const PAGE_SIZE = 60;
 type CatalogResult = { catalog?: IconCatalog; error?: string };
-const libraryKey = (library: IconLibrary) => `${library.id}:${library.version}`;
+const cachedResults = (libraries: IconLibrary[]): Record<string, CatalogResult> =>
+  Object.fromEntries(
+    libraries.flatMap((library) => {
+      const catalog = cachedIcons(library);
+      return catalog ? [[libraryKey(library), { catalog }]] : [];
+    }),
+  );
 export function IconBrowser({
   libraries,
   selected,
@@ -53,13 +60,13 @@ export function IconBrowser({
   const query = useDeferredValue(search);
   const [page, setPage] = useState(0);
   const [reload, setReload] = useState(0);
-  const [results, setResults] = useState<Record<string, CatalogResult>>({});
-  const cache = useRef<Record<string, CatalogResult>>({});
+  const [results, setResults] = useState<Record<string, CatalogResult>>(() => cachedResults(libraries));
   const forced = useRef(new Set<string>());
   const sources = scoped.map(libraryKey).join(',');
   useEffect(() => {
     let active = true;
-    const pending = scoped.filter((library) => !cache.current[libraryKey(library)]);
+    setResults((previous) => ({ ...previous, ...cachedResults(scoped) }));
+    const pending = scoped.filter((library) => !cachedIcons(library));
     let index = 0;
     async function next() {
       while (active && index < pending.length) {
@@ -68,16 +75,13 @@ export function IconBrowser({
         let result: CatalogResult;
         try {
           result = {
-            catalog: await api<IconCatalog>(
-              `/api/icon-libraries/${library.id}/icons${forced.current.has(key) ? '?refresh=1' : ''}`,
-            ),
+            catalog: await loadIcons(library, forced.current.has(key)),
           };
         } catch (error) {
           result = { error: errorMessage(error) };
         }
         if (!active) return;
         forced.current.delete(key);
-        cache.current[key] = result;
         setResults((previous) => ({ ...previous, [key]: result }));
       }
     }
@@ -108,10 +112,10 @@ export function IconBrowser({
   const refresh = (targets = scoped) => {
     for (const library of targets) {
       const key = libraryKey(library);
-      delete cache.current[key];
+      invalidateIconCatalog(library);
       forced.current.add(key);
     }
-    setResults({ ...cache.current });
+    setResults(cachedResults(libraries));
     setPage(0);
     setReload((value) => value + 1);
   };

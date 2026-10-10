@@ -1,8 +1,14 @@
 import { ASSETS, HTML } from '../../.generated/assets';
 import type { IconLibrary, ServerRecord, Subscription } from '../shared/types';
 import { iconLibraryURL, MAX_ICON_LIBRARIES } from '../shared/icons';
-import { cachedIconCatalog, ICON_LIBRARIES_KEY, IconCatalogError } from './icon-libraries';
-import { GITHUB_SETTINGS_KEY, validateGitHubToken, type GitHubSettings } from './github';
+import { cachedIconCatalog, IconCatalogError } from './icon-libraries';
+import {
+  GITHUB_SETTINGS_KEY,
+  validateGitHubToken,
+  verifyGitHubToken,
+  GitHubTokenError,
+  type GitHubSettings,
+} from './github';
 import {
   InputError,
   object,
@@ -21,6 +27,7 @@ import {
   type PasswordHash,
 } from './crypto';
 import { Store, StorageBusyError } from './storage';
+import { discoveryInput, discoverEmbyLines, EmbyDiscoveryError } from './emby-lines';
 
 interface Admin {
   password: PasswordHash;
@@ -180,7 +187,8 @@ async function handle(request: Request, env: Env): Promise<Response> {
         throw new HttpError(403, '部署密钥不正确');
       const password = validatePassword(input.password);
       const created: Admin = { password: await hashPassword(password, env.APP_SECRET), version: random() };
-      await store.iconLibraries();
+      await store.initializeCatalogs();
+      await store.embyDeviceId();
       await store.put('admin', created);
       return createSession(request, store, created);
     }
@@ -200,6 +208,10 @@ async function handle(request: Request, env: Env): Promise<Response> {
     return json({ ok: true }, 200, { 'Set-Cookie': cookie(request, '', 0) });
   }
   const admin = await requireAdmin(request, store);
+  if (path === '/api/settings/emby') {
+    if (method !== 'GET') throw new HttpError(405, '不支持此请求方法');
+    return json({ deviceId: await store.embyDeviceId() });
+  }
   if (path === '/api/settings/github') {
     let settings = await store.get<GitHubSettings>(GITHUB_SETTINGS_KEY);
     if (method !== 'GET') {
@@ -207,8 +219,13 @@ async function handle(request: Request, env: Env): Promise<Response> {
       const input = await readBody(request);
       if (input.version !== (settings?.version ?? null))
         throw new HttpError(409, 'GitHub 设置已更新，请重新打开后重试');
+      const token = method === 'PUT' ? validateGitHubToken(input.token) : undefined;
+      if (token) {
+        await limited(request, env.AUTH_LIMITER, 'github_verify');
+        await verifyGitHubToken(token);
+      }
       settings = {
-        ...(method === 'PUT' ? { token: validateGitHubToken(input.token) } : {}),
+        ...(token ? { token } : {}),
         version: random(12),
         updatedAt: new Date().toISOString(),
       };
@@ -223,46 +240,50 @@ async function handle(request: Request, env: Env): Promise<Response> {
   if (path === '/api/me' && method === 'GET') return json({ authenticated: true });
   if (path === '/api/dashboard' && method === 'GET') {
     const [servers, subscriptions, iconLibraries] = await Promise.all([
-      store.servers(true),
+      store.serverCatalog(),
       store.list<Subscription>('sub:'),
-      store.iconLibraries(),
+      store.iconLibraryCatalog(),
     ]);
     return json({
-      servers: servers.sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
+      servers: servers.items.sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
       subscriptions: subscriptions.sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
-      iconLibraries,
+      iconLibraries: iconLibraries.items,
+      revisions: { servers: servers.revision, iconLibraries: iconLibraries.revision },
     });
   }
   const libraryMatch = path.match(/^\/api\/icon-libraries(?:\/([a-f0-9-]{36})(\/icons)?)?$/);
   if (libraryMatch) {
     const [, id, icons] = libraryMatch;
-    const libraries = await store.iconLibraries();
+    const catalog = await store.iconLibraryCatalog();
+    const libraries = catalog.items;
     const existing = id ? libraries.find((library) => library.id === id) : undefined;
     if (id && !existing) throw new HttpError(404, '图标库不存在，请刷新后重试');
     if (method === 'GET') {
       if (existing && icons) {
         await limited(request, env.PUBLIC_LIMITER, 'icon_catalog');
-        return json(
-          await cachedIconCatalog(
-            existing.url,
-            url.origin,
-            url.searchParams.get('refresh') === '1',
-            await store.get<GitHubSettings>(GITHUB_SETTINGS_KEY),
-          ),
+        let cacheStatus = 'MISS';
+        const catalog = await cachedIconCatalog(
+          existing.url,
+          url.origin,
+          url.searchParams.get('refresh') === '1',
+          await store.get<GitHubSettings>(GITHUB_SETTINGS_KEY),
+          (status) => {
+            cacheStatus = status;
+          },
         );
+        return json(catalog, 200, { 'X-Libra-Icon-Cache': cacheStatus });
       }
-      return json(existing ?? libraries);
+      return json(existing ?? libraries, 200, { 'X-Libra-Catalog-Revision': catalog.revision });
     }
     if (icons || !['POST', 'PUT', 'DELETE'].includes(method) || (id ? method === 'POST' : method !== 'POST'))
       throw new HttpError(405, '不支持此请求方法');
     const input = await readBody(request);
+    if (input.catalogRevision !== catalog.revision)
+      throw new HttpError(409, '图标库目录已更新，请刷新后重试');
     if (existing) version(input.version, existing.version);
     if (existing && method === 'DELETE') {
-      await store.put(
-        ICON_LIBRARIES_KEY,
-        libraries.filter((library) => library.id !== id),
-      );
-      return json({ ok: true });
+      const catalogRevision = await store.saveIconLibraries(libraries.filter((library) => library.id !== id));
+      return json({ ok: true, catalogRevision });
     }
     if (!existing && libraries.length >= MAX_ICON_LIBRARIES)
       throw new InputError(`最多维护 ${MAX_ICON_LIBRARIES} 个图标库`);
@@ -279,11 +300,10 @@ async function handle(request: Request, env: Env): Promise<Response> {
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
     };
-    await store.put(
-      ICON_LIBRARIES_KEY,
+    const catalogRevision = await store.saveIconLibraries(
       existing ? libraries.map((library) => (library.id === id ? record : library)) : [...libraries, record],
     );
-    return json(record, existing ? 200 : 201);
+    return json({ ...record, catalogRevision }, existing ? 200 : 201);
   }
   if (path === '/api/auth/password' && method === 'POST') {
     await limited(request, env.AUTH_LIMITER, 'password');
@@ -299,12 +319,22 @@ async function handle(request: Request, env: Env): Promise<Response> {
     await store.put('admin', updated);
     return createSession(request, store, updated);
   }
+  if (path === '/api/servers/discover-lines') {
+    if (method !== 'POST') throw new HttpError(405, '不支持此请求方法');
+    const input = discoveryInput(await readBody(request));
+    await limited(request, env.AUTH_LIMITER, 'emby_lines');
+    const deviceId = await store.embyDeviceId();
+    return json(await discoverEmbyLines(input, deviceId));
+  }
   const serverMatch = path.match(/^\/api\/servers(?:\/([a-f0-9-]{36}))?$/);
   if (serverMatch) {
     if (!['POST', 'PUT', 'DELETE'].includes(method)) throw new HttpError(405, '不支持此请求方法');
     const input = await readBody(request);
     const id = serverMatch[1];
-    const servers = await store.servers();
+    const catalog = await store.serverCatalog();
+    const servers = catalog.items;
+    if (input.catalogRevision !== catalog.revision)
+      throw new HttpError(409, '服务器目录已更新，请刷新后重试');
     const existing = id ? servers.find((server) => server.id === id) : undefined;
     if (id && !existing) throw new HttpError(404, '服务器不存在');
     if (method === 'POST' && !id) {
@@ -318,14 +348,14 @@ async function handle(request: Request, env: Env): Promise<Response> {
         createdAt: now,
         updatedAt: now,
       };
-      await store.saveServers([...servers, record]);
-      return json(record, 201);
+      const catalogRevision = await store.saveServers([...servers, record]);
+      return json({ ...record, catalogRevision }, 201);
     }
     if (existing && (method === 'PUT' || method === 'DELETE')) {
       version(input.version, existing.version);
       if (method === 'DELETE') {
-        await store.saveServers(servers.filter((server) => server.id !== id));
-        return json({ ok: true });
+        const catalogRevision = await store.saveServers(servers.filter((server) => server.id !== id));
+        return json({ ok: true, catalogRevision });
       }
       const record: ServerRecord = {
         ...existing,
@@ -334,8 +364,10 @@ async function handle(request: Request, env: Env): Promise<Response> {
         version: random(12),
         updatedAt: new Date().toISOString(),
       };
-      await store.saveServers(servers.map((server) => (server.id === id ? record : server)));
-      return json(record);
+      const catalogRevision = await store.saveServers(
+        servers.map((server) => (server.id === id ? record : server)),
+      );
+      return json({ ...record, catalogRevision });
     }
     throw new HttpError(405, '不支持此请求方法');
   }
@@ -418,6 +450,8 @@ function safeErrorName(error: unknown): string {
     'StorageFormatError',
     'StorageDecryptionError',
     'IconCatalogError',
+    'EmbyDiscoveryError',
+    'GitHubTokenError',
   ];
   return error instanceof Error && names.includes(error.name) ? error.name : 'UnknownError';
 }
@@ -430,7 +464,10 @@ export default {
       const mismatch = error instanceof StorageDecryptionError;
       const busy = error instanceof StorageBusyError;
       const status =
-        error instanceof HttpError || error instanceof IconCatalogError
+        error instanceof HttpError ||
+        error instanceof IconCatalogError ||
+        error instanceof EmbyDiscoveryError ||
+        error instanceof GitHubTokenError
           ? error.status
           : error instanceof InputError
             ? 400
@@ -457,6 +494,7 @@ export default {
               error: '部署密钥与已有数据不匹配，或数据已损坏。请恢复原来的 APP_SECRET 后重新部署。',
             }
           : {
+              ...(busy ? { code: 'KV_WRITE_RATE_LIMIT' } : {}),
               error: busy
                 ? '保存过于频繁，请稍等一秒后重试'
                 : status === 500

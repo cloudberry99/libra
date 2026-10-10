@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { Check, KeyRound, Trash2 } from 'lucide-react';
 import type { GitHubStatus } from '../../shared/types';
 import { api, errorMessage } from '../api';
+import { clearIconCatalogCache } from '../icon-cache';
 import { Modal } from '../components/Modal';
 import { Button, Field, Message, PasswordInput, Spinner } from '../components/ui';
 import { useEditorClose } from '../useEditorClose';
@@ -29,6 +30,7 @@ export function GitHubSettings({ close, notify }: { close: () => void; notify: (
   }, [reload]);
   async function save(method: 'PUT' | 'DELETE') {
     if (!status) return;
+    if (method === 'DELETE' && !window.confirm('确定移除 GitHub Token 吗？')) return;
     setBusy(true);
     setError('');
     try {
@@ -36,6 +38,7 @@ export function GitHubSettings({ close, notify }: { close: () => void; notify: (
         version: status.version,
         ...(method === 'PUT' ? { token } : {}),
       });
+      clearIconCatalogCache();
       setToken('');
       notify(method === 'PUT' ? 'GitHub Token 已保存' : 'GitHub Token 已移除');
       close();

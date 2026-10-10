@@ -106,6 +106,69 @@
   grid-template-columns: 1fr 1fr;
   gap: 0 18px;
 }
+.server-editor-fields {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+.line-discovery-action {
+  margin-left: auto;
+  min-height: 34px;
+  padding: 7px 11px;
+  font-size: 12px;
+}
+.line-discovery-message {
+  margin: 12px 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+.line-selection {
+  padding: 16px;
+  margin: 14px 0;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: #fff;
+}
+.line-selection-heading,
+.line-selection-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.line-selection-heading span,
+.line-selection > p,
+.line-selection-list small {
+  color: var(--muted);
+  font-size: 12px;
+}
+.line-selection-list {
+  max-height: 260px;
+  overflow-y: auto;
+  margin: 12px 0;
+}
+.line-selection-list label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 4px;
+  cursor: pointer;
+}
+.line-selection-list label > span {
+  min-width: 0;
+}
+.line-selection-list strong,
+.line-selection-list small {
+  display: block;
+  overflow-wrap: anywhere;
+}
+.line-selection-list strong {
+  font-size: 13px;
+}
+.line-selection-list small {
+  margin-top: 4px;
+}
 .form-section-heading {
   display: flex;
   align-items: center;

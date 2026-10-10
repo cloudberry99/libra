@@ -1,6 +1,6 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import type { Miniflare } from 'miniflare';
+import { type Miniflare, Response as TestResponse } from 'miniflare';
 import { createTestWorker } from '../scripts/test-runtime.mjs';
 import { SERVER_CATALOG_KEY } from '../src/worker/storage';
 import { DEFAULT_ICON_LIBRARIES, ICON_LIBRARIES_KEY } from '../src/worker/icon-libraries';
@@ -19,6 +19,22 @@ async function request(
   body?: unknown,
   options: { auth?: boolean; origin?: string; raw?: string; ip?: string } = {},
 ) {
+  if (
+    cookie &&
+    options.auth !== false &&
+    !options.raw &&
+    method !== 'GET' &&
+    body &&
+    typeof body === 'object' &&
+    !('catalogRevision' in body) &&
+    /^\/api\/(servers|icon-libraries)(\/|$)/.test(path)
+  ) {
+    const dashboard = await read(await request('/api/dashboard'));
+    body = {
+      ...body,
+      catalogRevision: dashboard.revisions[path.startsWith('/api/servers') ? 'servers' : 'iconLibraries'],
+    };
+  }
   const headers: Record<string, string> = { 'CF-Connecting-IP': options.ip ?? `192.0.2.${++ip}` };
   if (options.auth !== false && cookie) headers.Cookie = cookie;
   if (method !== 'GET' && method !== 'HEAD')
@@ -53,7 +69,16 @@ async function createServer(name = '家庭媒体库', enabled = true) {
   return read(response);
 }
 before(async () => {
-  worker = await createTestWorker({ secret });
+  worker = await createTestWorker({
+    secret,
+    outboundService: async (request) => {
+      if (request.url !== 'https://api.github.com/user') throw new Error('Unexpected test outbound request');
+      return TestResponse.json(
+        {},
+        { status: request.headers.get('Authorization') === `Bearer ghp_${'a'.repeat(36)}` ? 200 : 401 },
+      );
+    },
+  });
 });
 after(async () => {
   await worker?.dispose();
@@ -192,6 +217,11 @@ test('GitHub token settings encrypt secrets, never return them, and protect chan
     (await request('/api/settings/github', 'PUT', { token: 'invalid', version: null })).status,
     400,
   );
+  assert.equal(
+    (await request('/api/settings/github', 'PUT', { token: `ghp_${'z'.repeat(36)}`, version: null })).status,
+    422,
+  );
+  assert.equal((await read(await request('/api/settings/github'))).configured, false);
   const saved = await request('/api/settings/github', 'PUT', { token, version: null });
   assert.equal(saved.status, 200);
   const status = await read(saved);
@@ -203,6 +233,20 @@ test('GitHub token settings encrypt secrets, never return them, and protect chan
   assert.equal(raw.includes(token), false);
   assert.equal(JSON.parse(raw).v, 2);
   assert.equal((await request('/api/settings/github', 'PUT', { token, version: null })).status, 409);
+  assert.equal(
+    (
+      await request('/api/settings/github', 'PUT', {
+        token: `ghp_${'z'.repeat(36)}`,
+        version: status.version,
+      })
+    ).status,
+    422,
+  );
+  assert.deepEqual(
+    await read(await request('/api/settings/github')),
+    status,
+    'invalid replacement preserves the working token',
+  );
   const removed = await read(await request('/api/settings/github', 'DELETE', { version: status.version }));
   assert.equal(removed.configured, false);
   assert.notEqual(removed.version, status.version);
@@ -387,6 +431,63 @@ test('a selected subscription can be disabled, enabled and rotated after its las
     (await request('/api/subscriptions', 'POST', { name: 'Reassigned', slug: sub.slug })).status,
     201,
   );
+});
+test('whole catalog revisions reject stale creates, edits and deletes across different records', async () => {
+  const a = await createServer('Revision A');
+  const stale = (await read(await request('/api/dashboard'))).revisions.servers;
+  const b = await createServer('Revision B');
+  for (const [path, method, body] of [
+    ['/api/servers', 'POST', { config: a.config }],
+    [`/api/servers/${a.id}`, 'PUT', { version: a.version, enabled: false }],
+    [`/api/servers/${a.id}`, 'DELETE', { version: a.version }],
+  ] as const) {
+    const response = await request(path, method, { ...body, catalogRevision: stale });
+    assert.equal(response.status, 409);
+    assert.match((await read(response)).error, /目录已更新/);
+  }
+  const unchanged = await read(await request('/api/dashboard'));
+  assert.equal(unchanged.servers.find((server: Data) => server.id === a.id).enabled, true);
+  assert.ok(unchanged.servers.some((server: Data) => server.id === b.id));
+  assert.equal(unchanged.revisions.servers, b.catalogRevision);
+  const updated = await request(`/api/servers/${a.id}`, 'PUT', {
+    version: a.version,
+    enabled: false,
+    catalogRevision: unchanged.revisions.servers,
+  });
+  assert.equal(updated.status, 200);
+  assert.notEqual((await read(updated)).catalogRevision, unchanged.revisions.servers);
+
+  const library = await read(
+    await request('/api/icon-libraries', 'POST', {
+      name: 'Revision library',
+      url: 'https://icons.example.com/revision-a.json',
+    }),
+  );
+  const next = await read(
+    await request('/api/icon-libraries', 'POST', {
+      name: 'Another library',
+      url: 'https://icons.example.com/revision-b.json',
+    }),
+  );
+  for (const [path, method, body] of [
+    [
+      '/api/icon-libraries',
+      'POST',
+      { name: 'Stale create', url: 'https://icons.example.com/revision-c.json' },
+    ],
+    [`/api/icon-libraries/${library.id}`, 'PUT', { ...library, name: 'Stale edit' }],
+    [`/api/icon-libraries/${library.id}`, 'DELETE', { version: library.version }],
+  ] as const)
+    assert.equal(
+      (await request(path, method, { ...body, catalogRevision: library.catalogRevision })).status,
+      409,
+    );
+  const libraries = await read(await request('/api/dashboard'));
+  assert.deepEqual(
+    libraries.iconLibraries.map((row: Data) => row.id),
+    [library.id, next.id],
+  );
+  assert.equal(libraries.revisions.iconLibraries, next.catalogRevision);
 });
 test('login rate limiting uses IP and protects repeated guesses', async () => {
   for (let i = 0; i < 10; i++)

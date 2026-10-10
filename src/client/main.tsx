@@ -5,6 +5,7 @@ import { Brand, Spinner, Button, Message } from './components/ui';
 import { Login } from './pages/Login';
 import { Workspace } from './pages/Workspace';
 import { api, ApiError, errorMessage } from './api';
+import { clearIconCatalogCache } from './icon-cache';
 
 function App() {
   const [state, setState] = useState<{ configured: boolean; initialized: boolean; loggedIn: boolean } | null>(
@@ -31,7 +32,10 @@ function App() {
   }
   useEffect(() => {
     void start();
-    const expired = () => setState((previous) => (previous ? { ...previous, loggedIn: false } : null));
+    const expired = () => {
+      clearIconCatalogCache();
+      setState((previous) => (previous ? { ...previous, loggedIn: false } : null));
+    };
     window.addEventListener('libra:expired', expired);
     return () => window.removeEventListener('libra:expired', expired);
   }, []);
@@ -50,7 +54,12 @@ function App() {
       </div>
     );
   return state.loggedIn ? (
-    <Workspace logout={() => setState({ ...state, loggedIn: false })} />
+    <Workspace
+      logout={() => {
+        clearIconCatalogCache();
+        setState({ ...state, loggedIn: false });
+      }}
+    />
   ) : (
     <Login
       initialized={state.initialized}

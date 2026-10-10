@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { Check } from 'lucide-react';
-import type { IconLibrary } from '../../shared/types';
+import type { CatalogWrite, IconLibrary } from '../../shared/types';
 import { iconLibraryURL } from '../../shared/icons';
 import { Modal } from '../components/Modal';
 import { Button, Field, Message } from '../components/ui';
@@ -9,12 +9,14 @@ import { useEditorClose } from '../useEditorClose';
 
 export function IconLibraryEditor({
   library,
+  catalogRevision,
   close,
   save,
 }: {
   library?: IconLibrary;
+  catalogRevision: string;
   close: () => void;
-  save: (library: IconLibrary) => void;
+  save: (library: CatalogWrite<IconLibrary>) => void;
 }) {
   const [name, setName] = useState(library?.name ?? '');
   const [url, setUrl] = useState(library?.url ?? '');
@@ -26,13 +28,14 @@ export function IconLibraryEditor({
     setBusy(true);
     setError('');
     try {
-      const record = await api<IconLibrary>(
+      const record = await api<CatalogWrite<IconLibrary>>(
         `/api/icon-libraries${library ? `/${library.id}` : ''}`,
         library ? 'PUT' : 'POST',
         {
           name,
           url: iconLibraryURL(url),
           version: library?.version,
+          catalogRevision,
         },
       );
       save(record);

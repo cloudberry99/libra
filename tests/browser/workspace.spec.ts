@@ -55,6 +55,17 @@ test('admin workflow, player payload, subscriptions and scannable QR on desktop 
   await expect(page.locator('.toast')).toHaveText('服务器已保存');
   await expect(page.locator('.toast')).toBeVisible();
   await page.getByRole('button', { name: '导入播放器' }).click();
+  // The toast existed before this modal opened and must be above its backdrop.
+  const devtools = await page.context().newCDPSession(page);
+  await devtools.send('DOM.enable');
+  const { root } = await devtools.send('DOM.getDocument');
+  const { nodeId: toastId } = await devtools.send('DOM.querySelector', {
+    nodeId: root.nodeId,
+    selector: '.toast',
+  });
+  const topLayer = await devtools.send('DOM.getTopLayerElements');
+  expect(topLayer.nodeIds.at(-1)).toBe(toastId);
+  await devtools.detach();
   const libraURL = await page.getByRole('link', { name: '打开 Libra' }).getAttribute('href');
   const payload = JSON.parse(
     Buffer.from(new URL(libraURL!).searchParams.get('data')!, 'base64url').toString('utf8'),
@@ -83,10 +94,12 @@ test('admin workflow, player payload, subscriptions and scannable QR on desktop 
       ['动画收藏馆', '给想象力留一个位置', 'anime.example.com'],
       ['私人影院', '光影之间，自有天地', 'private.example.com'],
     ]) {
+      const dashboard = (await (await fetch('/api/dashboard')).json()) as DashboardData;
       const response = await fetch('/api/servers', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Libra-Request': '1' },
         body: JSON.stringify({
+          catalogRevision: dashboard.revisions.servers,
           config: {
             type: 'emby',
             name,
@@ -175,6 +188,148 @@ test('admin workflow, player payload, subscriptions and scannable QR on desktop 
   await expect(page.getByRole('heading', { name: '欢迎回来' })).toBeVisible();
   await page.screenshot({ path: 'test-results/login-mobile.png', fullPage: true });
   expect(pageErrors).toEqual([]);
+});
+
+test('server-side line discovery merges without replacing manual lines, stays in the draft and handles errors', async ({
+  page,
+}) => {
+  await login(page);
+  const initial: DashboardData = await (await page.request.get('/api/dashboard')).json();
+  const directRequests: string[] = [];
+  page.on('request', (request) => {
+    if (new URL(request.url()).hostname === 'discovery.example.com') directRequests.push(request.url());
+  });
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const sent: unknown[] = [];
+  await page.route('**/api/servers/discover-lines', async (route) => {
+    sent.push(route.request().postDataJSON());
+    await gate;
+    await route.fulfill({
+      json: {
+        lines: [
+          { url: 'https://discovery.example.com/emby', name: '原主线路' },
+          { url: 'https://manual.example.com:443/emby/', name: '不能覆盖手动名称' },
+          { url: 'https://backup.example.com/emby', name: '备用直连' },
+          { url: 'http://192.168.1.10:8096', name: '家中线路' },
+        ],
+        skipped: 0,
+      },
+    });
+  });
+  await page.getByRole('button', { name: '添加服务器', exact: true }).click();
+  await page.getByPlaceholder('例如：家庭媒体库').fill('线路获取回归');
+  await page.getByPlaceholder('Emby 账号').fill('demo');
+  await page.getByPlaceholder('服务器登录密码').fill(' 中文 &+#% ');
+  await page
+    .getByPlaceholder('https://media.example.com:8920/emby')
+    .fill('https://discovery.example.com/emby');
+  await page.getByPlaceholder('主线路', { exact: true }).fill('我的主线路');
+  await page.getByRole('button', { name: /添加备用线路/ }).click();
+  await page.getByPlaceholder('http://192.168.1.10:8096').fill('https://manual.example.com/emby');
+  await page.getByPlaceholder('例如：家中直连').fill('手动名称');
+  await page.getByRole('button', { name: '获取备用线路', exact: true }).click();
+  await expect(
+    page.getByRole('dialog').getByRole('button', { name: '添加服务器', exact: true }),
+  ).toBeDisabled();
+  await expect(page.getByPlaceholder('Emby 账号')).toBeDisabled();
+  release();
+  await expect(page.locator('.line-discovery-message')).toHaveText('已添加 2 条备用线路，保存后生效');
+  await expect(page.getByPlaceholder('例如：家中直连')).toHaveCount(3);
+  await expect(page.getByPlaceholder('例如：家中直连').nth(0)).toHaveValue('手动名称');
+  await expect(page.getByPlaceholder('主线路', { exact: true })).toHaveValue('我的主线路');
+  expect(sent[0]).toEqual({
+    primary: { url: 'https://discovery.example.com/emby' },
+    credentials: { username: 'demo', password: ' 中文 &+#% ' },
+  });
+  expect((await (await page.request.get('/api/dashboard')).json()).servers).toHaveLength(
+    initial.servers.length,
+  );
+  await page.getByRole('button', { name: '获取备用线路', exact: true }).click();
+  await expect(page.locator('.line-discovery-message')).toHaveText('没有发现新的备用线路');
+  await page.getByRole('button', { name: '获取备用线路', exact: true }).scrollIntoViewIfNeeded();
+  await page.screenshot({ path: 'test-results/line-discovery-desktop.png', fullPage: true });
+  await page.getByRole('dialog').getByRole('button', { name: '添加服务器', exact: true }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  const saved: DashboardData = await (await page.request.get('/api/dashboard')).json();
+  const record = saved.servers.find((row) => row.config.name === '线路获取回归')!;
+  expect(record.config.alternates?.map((line) => line.name)).toEqual(['手动名称', '备用直连', '家中线路']);
+  expect(record.config.credentials?.password).toBe(' 中文 &+#% ');
+  await page.unroute('**/api/servers/discover-lines');
+  await page.route('**/api/servers/discover-lines', (route) =>
+    route.fulfill({ status: 422, json: { error: '这台服务器未提供备用线路接口，仍可手动添加线路' } }),
+  );
+  await page.getByRole('button', { name: '编辑 线路获取回归', exact: true }).click();
+  await page.getByRole('button', { name: '获取备用线路', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('未提供备用线路接口');
+  await expect(page.getByPlaceholder('例如：家中直连')).toHaveCount(3);
+  await expect(page.getByPlaceholder('服务器登录密码')).toHaveValue(' 中文 &+#% ');
+  expect((await page.request.get('/api/me')).status()).toBe(200);
+  expect(directRequests).toEqual([]);
+});
+
+test('line discovery overflow allows explicit selection on mobile without silently dropping manual lines', async ({
+  page,
+}) => {
+  await login(page);
+  const dashboard: DashboardData = await (await page.request.get('/api/dashboard')).json();
+  const created = await page.request.post('/api/servers', {
+    headers: { Origin: 'http://127.0.0.1:8789', 'X-Libra-Request': '1' },
+    data: {
+      catalogRevision: dashboard.revisions.servers,
+      config: {
+        type: 'emby',
+        name: '线路选择回归',
+        credentials: { username: 'demo' },
+        primary: { url: 'https://overflow.example.com/emby' },
+        alternates: Array.from({ length: 31 }, (_, index) => ({
+          url: `https://manual-${index}.example.com`,
+          name: `手动 ${index}`,
+        })),
+      },
+    },
+  });
+  expect(created.status()).toBe(201);
+  const record = await created.json();
+  await page.getByRole('button', { name: '刷新服务器' }).click();
+  await page.getByRole('button', { name: '编辑 线路选择回归', exact: true }).click();
+  await page.route('**/api/servers/discover-lines', (route) =>
+    route.fulfill({
+      json: {
+        lines: Array.from({ length: 35 }, (_, index) => ({
+          url: `https://found-${index}.example.com/emby`,
+          name: `新线路 ${String(index).padStart(2, '0')}`,
+        })),
+        skipped: 0,
+      },
+    }),
+  );
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByRole('button', { name: '获取备用线路', exact: true }).click();
+  await expect(page.getByRole('region', { name: '选择获取的备用线路' })).toBeVisible();
+  await expect(page.getByText('发现 35 条新线路', { exact: true })).toBeVisible();
+  await page.getByLabel('搜索获取的备用线路').fill('新线路 34');
+  await page.getByRole('checkbox', { name: /新线路 34/ }).check();
+  await page.getByLabel('搜索获取的备用线路').fill('新线路 00');
+  await expect(page.getByRole('checkbox', { name: /新线路 00/ })).toBeDisabled();
+  await page.getByLabel('搜索获取的备用线路').fill('新线路 34');
+  await page.getByLabel('搜索获取的备用线路').scrollIntoViewIfNeeded();
+  expect(await page.getByRole('dialog').evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+  await page.screenshot({ path: 'test-results/line-selection-mobile.png', fullPage: true });
+  await page.getByRole('button', { name: '添加所选线路', exact: true }).click();
+  await expect(page.getByPlaceholder('例如：家中直连')).toHaveCount(32);
+  await expect(page.getByRole('button', { name: /添加备用线路/ })).toBeDisabled();
+  await page.getByRole('button', { name: '保存更改', exact: true }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  const result: DashboardData = await (await page.request.get('/api/dashboard')).json();
+  const saved = result.servers.find((row) => row.id === record.id)!;
+  expect(saved.config.alternates?.slice(0, 31)).toEqual(record.config.alternates);
+  expect(saved.config.alternates?.[31]).toEqual({
+    name: '新线路 34',
+    url: 'https://found-34.example.com/emby',
+  });
 });
 
 test('deleting a selected server cannot block subscription toggles, and delete toasts stay visible', async ({
@@ -334,6 +489,11 @@ test('icon library management and GitHub token settings persist without revealin
   await page.getByRole('button', { name: 'GitHub Token', exact: true }).click();
   await expect(page.getByText('已配置 Token', { exact: true })).toBeVisible();
   await expect(page.getByPlaceholder('粘贴 GitHub Personal Access Token')).toHaveValue('');
+  page.once('dialog', (dialog) => dialog.dismiss());
+  await page.getByRole('button', { name: '移除 Token', exact: true }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(1);
+  expect((await (await page.request.get('/api/settings/github')).json()).configured).toBe(true);
+  page.once('dialog', (dialog) => dialog.accept());
   await page.getByRole('button', { name: '移除 Token', exact: true }).click();
   await expect(page.getByRole('dialog')).toHaveCount(0);
   await expect(page.locator('.toast')).toHaveText('GitHub Token 已移除');
@@ -423,6 +583,12 @@ test('Logo picker searches across libraries, isolates failures, paginates and pr
   await page.getByRole('button', { name: `选择图标 示例079 · ${round.name}`, exact: true }).click();
   await expect(page.getByLabel('Logo 地址')).toHaveValue(extras[79].url);
   await expect(page.locator('.icon-browser')).toHaveCount(0);
+  const beforeReopen = [...requests.entries()];
+  await page.getByRole('button', { name: '从图库选择', exact: true }).click();
+  await expect(page.locator('.icon-browser-count')).toHaveText('85 个图标');
+  expect([...requests.entries()]).toEqual(beforeReopen);
+  await page.getByLabel('搜索图标', { exact: true }).fill('示例079');
+  await page.getByRole('button', { name: `选择图标 示例079 · ${round.name}`, exact: true }).click();
   expect(((await (await page.request.get('/api/dashboard')).json()) as DashboardData).servers).toHaveLength(
     initial.servers.length,
   );

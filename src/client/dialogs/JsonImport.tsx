@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { Plus } from 'lucide-react';
-import type { ServerRecord } from '../../shared/types';
+import type { CatalogWrite, ServerRecord } from '../../shared/types';
 import { validateConfig } from '../../shared/validation';
 import { Button, Field, Message } from '../components/ui';
 import { Modal } from '../components/Modal';
@@ -8,7 +8,15 @@ import { api, errorMessage } from '../api';
 
 import { useEditorClose } from '../useEditorClose';
 
-export function JsonImport({ close, save }: { close: () => void; save: (row: ServerRecord) => void }) {
+export function JsonImport({
+  close,
+  save,
+  catalogRevision,
+}: {
+  close: () => void;
+  save: (row: CatalogWrite<ServerRecord>) => void;
+  catalogRevision: string;
+}) {
   const [value, setValue] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -26,7 +34,7 @@ export function JsonImport({ close, save }: { close: () => void; save: (row: Ser
       }
       if (Array.isArray(parsed)) throw new Error('请粘贴单台服务器的配置对象，不需要外层数组');
       const config = validateConfig(parsed);
-      save(await api<ServerRecord>('/api/servers', 'POST', { config }));
+      save(await api<CatalogWrite<ServerRecord>>('/api/servers', 'POST', { config, catalogRevision }));
       close();
     } catch (error) {
       setError(errorMessage(error));
