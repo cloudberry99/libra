@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import type { Miniflare } from 'miniflare';
 import { createTestWorker } from '../scripts/test-runtime.mjs';
 import { SERVER_CATALOG_KEY } from '../src/worker/storage';
+import { DEFAULT_ICON_LIBRARIES, ICON_LIBRARIES_KEY } from '../src/worker/icon-libraries';
+import { GITHUB_SETTINGS_KEY } from '../src/worker/github';
 import { randomBytes } from 'node:crypto';
 
 let worker: Miniflare;
@@ -102,6 +104,109 @@ test('first-time setup requires deployment key, strong password and matching ori
     (await request('/api/auth/setup', 'POST', { setupKey: secret, password: 'Abcdef12!' })).status,
     409,
   );
+});
+test('icon libraries are seeded during setup, editable, protected and deletable without reseeding', async () => {
+  const kv = await worker.getKVNamespace('LIBRA_KV');
+  assert.ok(await kv.get(ICON_LIBRARIES_KEY), 'setup writes the defaults before any dashboard request');
+  for (const path of [
+    '/api/icon-libraries',
+    '/api/icon-libraries/11111111-1111-4111-8111-111111111111/icons',
+  ]) {
+    assert.equal((await request(path, 'GET', undefined, { auth: false })).status, 401);
+  }
+  let libraries = (await (await request('/api/icon-libraries')).json()) as Data[];
+  assert.deepEqual(
+    libraries.map(({ name, url }) => ({ name, url })),
+    DEFAULT_ICON_LIBRARIES,
+  );
+  assert.equal(
+    (await request('/api/icon-libraries', 'POST', { name: '重复', url: libraries[0].url })).status,
+    409,
+  );
+  assert.equal(
+    (await request('/api/icon-libraries', 'POST', { name: '无效', url: 'http://example.com/list.json' }))
+      .status,
+    400,
+  );
+  assert.equal(
+    (
+      await request(
+        '/api/icon-libraries',
+        'POST',
+        { name: '跨站', url: 'https://example.com/list.json' },
+        { origin: 'https://other.example' },
+      )
+    ).status,
+    403,
+  );
+  const created = await request('/api/icon-libraries', 'POST', {
+    name: ' 自定义图标库 ',
+    url: 'https://ICONS.example.com:443/catalog.json',
+  });
+  assert.equal(created.status, 201);
+  const custom = await read(created);
+  assert.equal(custom.name, '自定义图标库');
+  assert.equal(custom.url, 'https://icons.example.com/catalog.json');
+  const updated = await read(
+    await request(`/api/icon-libraries/${custom.id}`, 'PUT', {
+      version: custom.version,
+      name: '重命名',
+      url: 'https://icons.example.com/new.json',
+    }),
+  );
+  assert.equal(updated.name, '重命名');
+  assert.equal(
+    (await request(`/api/icon-libraries/${custom.id}`, 'DELETE', { version: custom.version })).status,
+    409,
+  );
+  libraries = (await read(await request('/api/dashboard'))).iconLibraries;
+  for (const library of libraries)
+    assert.equal(
+      (await request(`/api/icon-libraries/${library.id}`, 'DELETE', { version: library.version })).status,
+      200,
+    );
+  assert.deepEqual(await read(await request('/api/icon-libraries')), []);
+  assert.deepEqual((await read(await request('/api/dashboard'))).iconLibraries, []);
+  assert.equal((await request(`/api/icon-libraries/${custom.id}/icons`)).status, 404);
+});
+test('GitHub token settings encrypt secrets, never return them, and protect changes by version and origin', async () => {
+  const token = `ghp_${'a'.repeat(36)}`;
+  assert.equal((await request('/api/settings/github', 'GET', undefined, { auth: false })).status, 401);
+  assert.deepEqual(await read(await request('/api/settings/github')), {
+    configured: false,
+    version: null,
+    updatedAt: null,
+  });
+  assert.equal(
+    (
+      await request(
+        '/api/settings/github',
+        'PUT',
+        { token, version: null },
+        { origin: 'https://other.example' },
+      )
+    ).status,
+    403,
+  );
+  assert.equal(
+    (await request('/api/settings/github', 'PUT', { token: 'invalid', version: null })).status,
+    400,
+  );
+  const saved = await request('/api/settings/github', 'PUT', { token, version: null });
+  assert.equal(saved.status, 200);
+  const status = await read(saved);
+  assert.deepEqual(Object.keys(status).sort(), ['configured', 'updatedAt', 'version']);
+  assert.equal(status.configured, true);
+  assert.deepEqual(await read(await request('/api/settings/github')), status);
+  assert.equal((await (await request('/api/dashboard')).text()).includes(token), false);
+  const raw = (await (await worker.getKVNamespace('LIBRA_KV')).get(GITHUB_SETTINGS_KEY, 'text'))!;
+  assert.equal(raw.includes(token), false);
+  assert.equal(JSON.parse(raw).v, 2);
+  assert.equal((await request('/api/settings/github', 'PUT', { token, version: null })).status, 409);
+  const removed = await read(await request('/api/settings/github', 'DELETE', { version: status.version }));
+  assert.equal(removed.configured, false);
+  assert.notEqual(removed.version, status.version);
+  assert.equal((await read(await request('/api/settings/github'))).configured, false);
 });
 test('credentials are encrypted in KV and raw bodies or cross-origin changes rejected', async () => {
   const server = await createServer();

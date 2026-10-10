@@ -1,6 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import { PNG } from 'pngjs';
 import jsQR from 'jsqr';
+import type { DashboardData } from '../../src/shared/types';
 
 async function login(page: Page) {
   await page.goto('/');
@@ -295,4 +296,162 @@ test('HTML error pages, network failures and mismatched secrets produce clear Ch
   );
   await page.getByRole('button', { name: '重试', exact: true }).click();
   await expect(page.getByRole('alert')).toContainText('部署密钥与已有数据不匹配');
+});
+
+test('icon library management and GitHub token settings persist without revealing saved secrets', async ({
+  page,
+}) => {
+  await login(page);
+  await navigate(page, '图标库');
+  await expect(page.locator('.icon-library-card')).toHaveCount(3);
+  await expect(page.getByRole('heading', { name: '白糖图标库 · 圆形', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '白糖图标库 · 方形', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '离歌图标库', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '添加图标库', exact: true }).click();
+  await page.getByLabel('图标库名称', { exact: true }).fill('自定义图库');
+  await page.getByLabel('图标库地址', { exact: true }).fill('https://icons.example.com/list.json');
+  await page.getByRole('button', { name: '保存图标库' }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(page.locator('.toast')).toHaveText('图标库已保存');
+  await expect(page.locator('.toast')).toBeVisible();
+  await page.getByRole('button', { name: '编辑 自定义图库', exact: true }).click();
+  await page.getByLabel('图标库名称', { exact: true }).fill('私人图库');
+  await page.getByLabel('图标库地址', { exact: true }).fill('https://icons.example.com/revised.json');
+  await page.getByRole('button', { name: '保存图标库' }).click();
+  await expect(page.getByRole('heading', { name: '私人图库', exact: true })).toBeVisible();
+  await page.reload();
+  await navigate(page, '图标库');
+  await expect(page.getByRole('heading', { name: '私人图库', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'GitHub Token', exact: true }).click();
+  await expect(page.getByText('未配置 Token', { exact: true })).toBeVisible();
+  const fakeToken = `ghp_${'b'.repeat(36)}`;
+  await page.getByPlaceholder('粘贴 GitHub Personal Access Token').fill(fakeToken);
+  await page.getByRole('button', { name: '保存', exact: true }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(page.locator('.toast')).toHaveText('GitHub Token 已保存');
+  const tokenStatus = await page.request.get('/api/settings/github');
+  expect(await tokenStatus.text()).not.toContain(fakeToken);
+  await page.getByRole('button', { name: 'GitHub Token', exact: true }).click();
+  await expect(page.getByText('已配置 Token', { exact: true })).toBeVisible();
+  await expect(page.getByPlaceholder('粘贴 GitHub Personal Access Token')).toHaveValue('');
+  await page.getByRole('button', { name: '移除 Token', exact: true }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(page.locator('.toast')).toHaveText('GitHub Token 已移除');
+  expect((await (await page.request.get('/api/settings/github')).json()).configured).toBe(false);
+  await page.getByRole('button', { name: '删除 私人图库', exact: true }).click();
+  await page.getByRole('button', { name: '确认删除', exact: true }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(page.locator('.toast')).toHaveText('图标库已删除');
+  await expect(page.locator('.toast')).toBeVisible();
+  await expect(page.locator('.icon-library-card')).toHaveCount(3);
+  await page.screenshot({ path: 'test-results/icon-libraries-desktop.png', fullPage: true });
+});
+
+test('Logo picker searches across libraries, isolates failures, paginates and preserves manual URLs', async ({
+  page,
+}) => {
+  await login(page);
+  const initial: DashboardData = await (await page.request.get('/api/dashboard')).json();
+  const [round, square, third] = initial.iconLibraries;
+  const requests = new Map<string, number>();
+  const extras = Array.from({ length: 80 }, (_, i) => ({
+    name: `示例${String(i).padStart(3, '0')}`,
+    url: `https://icons.example.com/${i}.png`,
+  }));
+  await page.route('https://icons.example.com/**', (route) =>
+    route.fulfill({
+      contentType: 'image/svg+xml',
+      body: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48"><rect width="48" height="48" rx="12" fill="#7962e8"/><path d="M15 12v24h21v-7H23V12z" fill="white"/></svg>',
+    }),
+  );
+  await page.route('**/api/icon-libraries/*/icons*', async (route) => {
+    const id = new URL(route.request().url()).pathname.split('/')[3];
+    requests.set(id, (requests.get(id) ?? 0) + 1);
+    if (id === third.id && requests.get(id) === 1)
+      return route.fulfill({ status: 502, json: { error: '图标库暂时无法访问' } });
+    const icons =
+      id === round.id
+        ? [
+            ...extras,
+            { name: 'EMBY Pro', url: 'https://icons.example.com/pro.png' },
+            { name: 'emby', url: 'https://icons.example.com/emby.png' },
+          ]
+        : id === square.id
+          ? [
+              { name: 'My Emby', url: 'https://icons.example.com/my-emby.png' },
+              { name: '家庭影院', url: 'https://icons.example.com/home.png' },
+            ]
+          : [{ name: '备用图标', url: 'https://icons.example.com/backup.png' }];
+    return route.fulfill({ json: { icons, skipped: 0 } });
+  });
+  const pageErrors: string[] = [];
+  page.on('pageerror', (error) => pageErrors.push(error.message));
+  await page.getByRole('button', { name: '添加服务器', exact: true }).click();
+  await page.getByPlaceholder('例如：家庭媒体库').fill('图标选择回归');
+  await page.getByPlaceholder('https://media.example.com:8920/emby').fill('https://logo.example.com/emby');
+  await page.getByRole('button', { name: '从图库选择', exact: true }).click();
+  await expect(page.getByLabel('选择图标库')).toHaveValue('all');
+  await expect(page.getByRole('alert')).toContainText('1 个图库加载失败');
+  await expect(page.locator('.icon-choice')).toHaveCount(60);
+  await page.getByRole('button', { name: '重试', exact: true }).click();
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await expect(page.locator('.icon-browser-count')).toHaveText('85 个图标');
+  const beforeSearch = [...requests.entries()];
+  await page.getByLabel('搜索图标', { exact: true }).fill('  eMbY  ');
+  await expect(page.locator('.icon-choice-name')).toHaveText(['emby', 'EMBY Pro', 'My Emby']);
+  await page.getByLabel('搜索图标', { exact: true }).press('Enter');
+  await expect(page.getByRole('dialog')).toHaveCount(1);
+  await page.getByLabel('搜索图标', { exact: true }).fill('家庭');
+  await expect(page.locator('.icon-choice-name')).toHaveText(['家庭影院']);
+  await page.getByLabel('搜索图标', { exact: true }).fill('没有这个图标');
+  await expect(page.getByText('没有找到匹配的图标', { exact: true })).toBeVisible();
+  expect([...requests.entries()]).toEqual(beforeSearch);
+  await page.getByLabel('选择图标库').selectOption(round.id);
+  await page.getByLabel('搜索图标', { exact: true }).fill('');
+  await expect(page.locator('.icon-choice')).toHaveCount(60);
+  await page.getByRole('button', { name: '下一页', exact: true }).click();
+  await expect(page.locator('.icon-choice')).toHaveCount(22);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByLabel('搜索图标', { exact: true }).fill('示例079');
+  await expect(page.locator('.icon-choice')).toHaveCount(1);
+  await page.getByLabel('搜索图标', { exact: true }).scrollIntoViewIfNeeded();
+  await page.screenshot({ path: 'test-results/icon-picker-mobile.png', fullPage: true });
+  expect(
+    await page.getByRole('dialog').evaluate((element) => element.scrollWidth <= element.clientWidth),
+  ).toBe(true);
+  await page.getByRole('button', { name: `选择图标 示例079 · ${round.name}`, exact: true }).click();
+  await expect(page.getByLabel('Logo 地址')).toHaveValue(extras[79].url);
+  await expect(page.locator('.icon-browser')).toHaveCount(0);
+  expect(((await (await page.request.get('/api/dashboard')).json()) as DashboardData).servers).toHaveLength(
+    initial.servers.length,
+  );
+  await page.getByRole('dialog').getByRole('button', { name: '添加服务器', exact: true }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  let data: DashboardData = await (await page.request.get('/api/dashboard')).json();
+  const server = data.servers.find((item) => item.config.name === '图标选择回归')!;
+  expect(server.config.logo).toBe(extras[79].url);
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await navigate(page, '图标库');
+  await page.getByRole('button', { name: `删除 ${round.name}`, exact: true }).click();
+  await page.getByRole('button', { name: '确认删除', exact: true }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await page.reload();
+  data = await (await page.request.get('/api/dashboard')).json();
+  expect(data.iconLibraries).toHaveLength(2);
+  expect(data.servers.find((item) => item.id === server.id)?.config.logo).toBe(extras[79].url);
+  await page.getByRole('button', { name: '编辑 图标选择回归', exact: true }).click();
+  await page.getByLabel('Logo 地址').fill('https://icons.example.com/manual.png');
+  await page.getByRole('button', { name: '保存更改', exact: true }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  data = await (await page.request.get('/api/dashboard')).json();
+  expect(data.servers.find((item) => item.id === server.id)?.config.logo).toBe(
+    'https://icons.example.com/manual.png',
+  );
+  await page.getByRole('button', { name: '编辑 图标选择回归', exact: true }).click();
+  await page.getByRole('button', { name: '清除 Logo', exact: true }).click();
+  await page.getByRole('button', { name: '保存更改', exact: true }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  data = await (await page.request.get('/api/dashboard')).json();
+  expect(data.servers.find((item) => item.id === server.id)?.config.logo).toBeUndefined();
+  expect(pageErrors).toEqual([]);
 });

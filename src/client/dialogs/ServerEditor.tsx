@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { Check, Plus, Server, Trash2, Waypoints } from 'lucide-react';
-import type { Endpoint, ServerRecord } from '../../shared/types';
+import type { Endpoint, IconLibrary, ServerRecord } from '../../shared/types';
+import { LogoField } from '../components/LogoField';
 import { validateConfig } from '../../shared/validation';
 import { Button, IconButton, Field, PasswordInput, Message, Switch } from '../components/ui';
 import { Modal } from '../components/Modal';
@@ -10,10 +11,12 @@ import { useEditorClose } from '../useEditorClose';
 
 export function ServerEditor({
   server,
+  iconLibraries,
   close,
   save,
 }: {
   server?: ServerRecord;
+  iconLibraries: IconLibrary[];
   close: () => void;
   save: (record: ServerRecord) => void;
 }) {
@@ -95,15 +98,7 @@ export function ServerEditor({
               />
             </Field>
           </div>
-          <Field label="Logo 地址" optional>
-            <input
-              value={logo}
-              onChange={(event) => setLogo(event.target.value)}
-              type="url"
-              placeholder="仅支持 HTTPS，例如：https://example.com/logo.png"
-              maxLength={2048}
-            />
-          </Field>
+          <LogoField value={logo} onChange={setLogo} libraries={iconLibraries} />
           <div className="form-grid">
             <Field label="用户名" optional>
               <input

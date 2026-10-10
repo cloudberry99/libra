@@ -1,6 +1,7 @@
 import { seal, unseal } from './crypto';
-import type { ServerRecord } from '../shared/types';
+import type { IconLibrary, ServerRecord } from '../shared/types';
 import { InputError } from '../shared/validation';
+import { defaultIconLibraries, ICON_LIBRARIES_KEY } from './icon-libraries';
 
 export const SERVER_CATALOG_KEY = 'catalog:servers:v1';
 export class StorageBusyError extends Error {
@@ -9,6 +10,14 @@ export class StorageBusyError extends Error {
 
 export class Store {
   constructor(private env: Env) {}
+  async iconLibraries(): Promise<IconLibrary[]> {
+    const saved = await this.get<IconLibrary[]>(ICON_LIBRARIES_KEY);
+    // An empty list means the user removed every library; never re-seed it.
+    if (saved !== null) return saved;
+    const defaults = defaultIconLibraries();
+    await this.put(ICON_LIBRARIES_KEY, defaults);
+    return defaults;
+  }
   async get<T>(key: string): Promise<T | null> {
     const value = await this.env.LIBRA_KV.get(key);
     return value === null ? null : unseal<T>(this.env.APP_SECRET, key, value);

@@ -1,5 +1,8 @@
 import { ASSETS, HTML } from '../../.generated/assets';
-import type { ServerRecord, Subscription } from '../shared/types';
+import type { IconLibrary, ServerRecord, Subscription } from '../shared/types';
+import { iconLibraryURL, MAX_ICON_LIBRARIES } from '../shared/icons';
+import { cachedIconCatalog, ICON_LIBRARIES_KEY, IconCatalogError } from './icon-libraries';
+import { GITHUB_SETTINGS_KEY, validateGitHubToken, type GitHubSettings } from './github';
 import {
   InputError,
   object,
@@ -177,6 +180,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
         throw new HttpError(403, '部署密钥不正确');
       const password = validatePassword(input.password);
       const created: Admin = { password: await hashPassword(password, env.APP_SECRET), version: random() };
+      await store.iconLibraries();
       await store.put('admin', created);
       return createSession(request, store, created);
     }
@@ -196,16 +200,90 @@ async function handle(request: Request, env: Env): Promise<Response> {
     return json({ ok: true }, 200, { 'Set-Cookie': cookie(request, '', 0) });
   }
   const admin = await requireAdmin(request, store);
+  if (path === '/api/settings/github') {
+    let settings = await store.get<GitHubSettings>(GITHUB_SETTINGS_KEY);
+    if (method !== 'GET') {
+      if (!['PUT', 'DELETE'].includes(method)) throw new HttpError(405, '不支持此请求方法');
+      const input = await readBody(request);
+      if (input.version !== (settings?.version ?? null))
+        throw new HttpError(409, 'GitHub 设置已更新，请重新打开后重试');
+      settings = {
+        ...(method === 'PUT' ? { token: validateGitHubToken(input.token) } : {}),
+        version: random(12),
+        updatedAt: new Date().toISOString(),
+      };
+      await store.put(GITHUB_SETTINGS_KEY, settings);
+    }
+    return json({
+      configured: !!settings?.token,
+      version: settings?.version ?? null,
+      updatedAt: settings?.updatedAt ?? null,
+    });
+  }
   if (path === '/api/me' && method === 'GET') return json({ authenticated: true });
   if (path === '/api/dashboard' && method === 'GET') {
-    const [servers, subscriptions] = await Promise.all([
+    const [servers, subscriptions, iconLibraries] = await Promise.all([
       store.servers(true),
       store.list<Subscription>('sub:'),
+      store.iconLibraries(),
     ]);
     return json({
       servers: servers.sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
       subscriptions: subscriptions.sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+      iconLibraries,
     });
+  }
+  const libraryMatch = path.match(/^\/api\/icon-libraries(?:\/([a-f0-9-]{36})(\/icons)?)?$/);
+  if (libraryMatch) {
+    const [, id, icons] = libraryMatch;
+    const libraries = await store.iconLibraries();
+    const existing = id ? libraries.find((library) => library.id === id) : undefined;
+    if (id && !existing) throw new HttpError(404, '图标库不存在，请刷新后重试');
+    if (method === 'GET') {
+      if (existing && icons) {
+        await limited(request, env.PUBLIC_LIMITER, 'icon_catalog');
+        return json(
+          await cachedIconCatalog(
+            existing.url,
+            url.origin,
+            url.searchParams.get('refresh') === '1',
+            await store.get<GitHubSettings>(GITHUB_SETTINGS_KEY),
+          ),
+        );
+      }
+      return json(existing ?? libraries);
+    }
+    if (icons || !['POST', 'PUT', 'DELETE'].includes(method) || (id ? method === 'POST' : method !== 'POST'))
+      throw new HttpError(405, '不支持此请求方法');
+    const input = await readBody(request);
+    if (existing) version(input.version, existing.version);
+    if (existing && method === 'DELETE') {
+      await store.put(
+        ICON_LIBRARIES_KEY,
+        libraries.filter((library) => library.id !== id),
+      );
+      return json({ ok: true });
+    }
+    if (!existing && libraries.length >= MAX_ICON_LIBRARIES)
+      throw new InputError(`最多维护 ${MAX_ICON_LIBRARIES} 个图标库`);
+    const name = text(input.name, '图标库名称', 100, true)!;
+    const source = iconLibraryURL(input.url);
+    if (libraries.some((library) => library.id !== id && library.url === source))
+      throw new HttpError(409, '这个图标库地址已经添加');
+    const now = new Date().toISOString();
+    const record: IconLibrary = {
+      id: existing?.id ?? crypto.randomUUID(),
+      name,
+      url: source,
+      version: random(12),
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+    };
+    await store.put(
+      ICON_LIBRARIES_KEY,
+      existing ? libraries.map((library) => (library.id === id ? record : library)) : [...libraries, record],
+    );
+    return json(record, existing ? 200 : 201);
   }
   if (path === '/api/auth/password' && method === 'POST') {
     await limited(request, env.AUTH_LIMITER, 'password');
@@ -322,7 +400,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
   throw new HttpError(404, '接口不存在');
 }
 function routeCategory(path: string): string {
-  for (const category of ['auth', 'servers', 'subscriptions'])
+  for (const category of ['auth', 'servers', 'subscriptions', 'icon-libraries', 'settings'])
     if (path === `/api/${category}` || path.startsWith(`/api/${category}/`)) return category;
   if (path === '/api/status') return 'status';
   if (path === '/api/dashboard') return 'dashboard';
@@ -339,6 +417,7 @@ function safeErrorName(error: unknown): string {
     'OperationError',
     'StorageFormatError',
     'StorageDecryptionError',
+    'IconCatalogError',
   ];
   return error instanceof Error && names.includes(error.name) ? error.name : 'UnknownError';
 }
@@ -351,7 +430,7 @@ export default {
       const mismatch = error instanceof StorageDecryptionError;
       const busy = error instanceof StorageBusyError;
       const status =
-        error instanceof HttpError
+        error instanceof HttpError || error instanceof IconCatalogError
           ? error.status
           : error instanceof InputError
             ? 400

@@ -3,6 +3,7 @@ import {
   ArrowUpRight,
   ChevronDown,
   CircleHelp,
+  Images,
   Link2,
   LockKeyhole,
   LogOut,
@@ -12,7 +13,7 @@ import {
   ShieldCheck,
   UserRound,
 } from 'lucide-react';
-import type { DashboardData, ServerRecord, Subscription } from '../../shared/types';
+import type { DashboardData, IconLibrary, ServerRecord, Subscription } from '../../shared/types';
 import { Brand, Button, IconButton, Message } from '../components/ui';
 import { ServerEditor } from '../dialogs/ServerEditor';
 import { SubscriptionEditor } from '../dialogs/SubscriptionEditor';
@@ -28,9 +29,14 @@ import { api, errorMessage } from '../api';
 import { titleOf } from '../helpers';
 import type { DialogState, Page } from '../types';
 import { Toast } from '../components/Toast';
+import { IconLibrariesPage } from './IconLibrariesPage';
+import { IconLibraryEditor } from '../dialogs/IconLibraryEditor';
+import { IconBrowser } from '../components/IconBrowser';
+import { Modal } from '../components/Modal';
+import { GitHubSettings } from '../dialogs/GitHubSettings';
 
 export function Workspace({ logout }: { logout: () => void }) {
-  const [data, setData] = useState<DashboardData>({ servers: [], subscriptions: [] });
+  const [data, setData] = useState<DashboardData>({ servers: [], subscriptions: [], iconLibraries: [] });
   const [page, setPage] = useState<Page>('servers');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -87,6 +93,15 @@ export function Workspace({ logout }: { logout: () => void }) {
     }));
     notify('订阅链接已保存');
   }
+  function saveIconLibrary(record: IconLibrary) {
+    setData((previous) => ({
+      ...previous,
+      iconLibraries: previous.iconLibraries.some((item) => item.id === record.id)
+        ? previous.iconLibraries.map((item) => (item.id === record.id ? record : item))
+        : [...previous.iconLibraries, record],
+    }));
+    notify('图标库已保存');
+  }
   async function toggleServer(server: ServerRecord) {
     setBusyId(server.id);
     try {
@@ -120,6 +135,7 @@ export function Workspace({ logout }: { logout: () => void }) {
   const titles = {
     servers: '服务器',
     subscriptions: '订阅链接',
+    icons: '图标库',
     security: '安全设置',
   };
   return (
@@ -140,6 +156,7 @@ export function Workspace({ logout }: { logout: () => void }) {
                 icon: <Link2 size={19} />,
                 count: data.subscriptions.length,
               },
+              { id: 'icons', title: '图标库', icon: <Images size={19} />, count: data.iconLibraries.length },
               { id: 'security', title: '安全设置', icon: <ShieldCheck size={19} /> },
             ] as const
           ).map((item) => (
@@ -217,10 +234,18 @@ export function Workspace({ logout }: { logout: () => void }) {
             </div>
             {page !== 'security' && (
               <Button
-                onClick={() => setDialog(page === 'servers' ? { kind: 'server' } : { kind: 'subscription' })}
+                onClick={() =>
+                  setDialog(
+                    page === 'servers'
+                      ? { kind: 'server' }
+                      : page === 'icons'
+                        ? { kind: 'iconLibrary' }
+                        : { kind: 'subscription' },
+                  )
+                }
               >
                 <Plus size={18} />
-                {page === 'servers' ? '添加服务器' : '创建订阅'}
+                {page === 'servers' ? '添加服务器' : page === 'icons' ? '添加图标库' : '创建订阅'}
               </Button>
             )}
           </div>
@@ -254,6 +279,14 @@ export function Workspace({ logout }: { logout: () => void }) {
             />
           )}
           {page === 'security' && <Security />}
+          {page === 'icons' && (
+            <IconLibrariesPage
+              libraries={data.iconLibraries}
+              loading={loading}
+              load={load}
+              setDialog={setDialog}
+            />
+          )}
           <footer className="workspace-footer">
             <span>
               Libra <i />
@@ -268,7 +301,12 @@ export function Workspace({ logout }: { logout: () => void }) {
       </main>
       <Toast message={toast} />
       {dialog?.kind === 'server' && (
-        <ServerEditor server={dialog.server} close={() => setDialog(null)} save={saveServer} />
+        <ServerEditor
+          server={dialog.server}
+          iconLibraries={data.iconLibraries}
+          close={() => setDialog(null)}
+          save={saveServer}
+        />
       )}
       {dialog?.kind === 'subscription' && (
         <SubscriptionEditor
@@ -294,6 +332,38 @@ export function Workspace({ logout }: { logout: () => void }) {
         />
       )}
       {dialog?.kind === 'help' && <Help close={() => setDialog(null)} />}
+      {dialog?.kind === 'githubSettings' && <GitHubSettings close={() => setDialog(null)} notify={notify} />}
+      {dialog?.kind === 'iconLibrary' && (
+        <IconLibraryEditor library={dialog.library} close={() => setDialog(null)} save={saveIconLibrary} />
+      )}
+      {dialog?.kind === 'browseIcons' && (
+        <Modal title={dialog.library.name} close={() => setDialog(null)} wide>
+          <div className="modal-body">
+            <IconBrowser
+              libraries={[dialog.library]}
+              action="复制"
+              onSelect={(icon) => void copy(icon.url)}
+            />
+          </div>
+        </Modal>
+      )}
+      {dialog?.kind === 'deleteIconLibrary' && (
+        <ConfirmDialog
+          title={`删除「${dialog.library.name}」？`}
+          description="删除后，这个图库将从选择列表中移除。已经保存的服务器 Logo 不受影响。"
+          close={() => setDialog(null)}
+          confirm={async () => {
+            await api(`/api/icon-libraries/${dialog.library.id}`, 'DELETE', {
+              version: dialog.library.version,
+            });
+            setData((previous) => ({
+              ...previous,
+              iconLibraries: previous.iconLibraries.filter((item) => item.id !== dialog.library.id),
+            }));
+            notify('图标库已删除');
+          }}
+        />
+      )}
       {dialog?.kind === 'deleteServer' && (
         <ConfirmDialog
           title={`删除「${titleOf(dialog.server)}」？`}

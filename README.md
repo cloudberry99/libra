@@ -14,6 +14,7 @@
 
 - Emby 服务器的添加、编辑、删除、启停、搜索，以及单条 JSON 配置导入。
 - 主线路、最多 32 条备用线路、备注和可选 Logo；支持局域网、IPv6、端口与反向代理路径。
+- 可维护的图标库，支持跨图库搜索、分页选择 Logo 和手动输入图片 URL；可选 GitHub Token。
 - Libra、SenPlayer、ePlayerX、Hills 和 RodelPlayer（小幻播放器）的 URL Scheme 导入。
 - 多条公开订阅：全部或指定服务器、随机或自定义后缀、停用、删除、更换后缀。
 - 订阅二维码、复制链接、下载二维码。二维码完全在浏览器本地生成。
@@ -74,6 +75,35 @@ npm run deploy
 
 删除、更换后缀后，旧后缀可以重新分配。如果重新分配，仍持有旧链接的客户端会读取新订阅对应的配置。
 
+## 图标库与 Logo
+
+在「图标库」页面添加、编辑或删除图库名称与 JSON 地址，也可以浏览图标并复制图片地址。服务器编辑框中的「从图库选择」默认搜索全部图库，支持中文、忽略英文大小写、多关键词匹配，以及按图库筛选。完整名称和名称开头匹配优先；每页 60 个图标、图片懒加载，搜索不会逐字发起网络请求。选中后回填 Logo 地址，保存服务器时才生效；也可以手动输入 HTTPS 图片地址或清除 Logo。
+
+首次初始化会将以下三个图库写入 KV；旧部署在首次登录加载工作台时补入。初始化不依赖第三方网络。此后以 KV 中用户维护的列表为准，包括空列表，重新部署不会恢复被删除的默认图库。删除图库不影响已经保存的服务器 Logo。
+
+- [白糖图标库 · 圆形](https://raw.githubusercontent.com/baiitang/Sakura/main/Fileball/Yuan/tubiao.json)
+- [白糖图标库 · 方形](https://raw.githubusercontent.com/baiitang/Sakura/main/Fileball/Fang/tubiao.json)
+- [离歌图标库](https://raw.githubusercontent.com/lige47/QuanX-icon-rule/refs/heads/main/lige-emby-icon.json)
+
+图标及其名称由各图库作者维护，本项目仅保存图库地址和选中的图片 URL。自定义图库使用相同格式：
+
+```json
+{
+  "name": "我的图标库",
+  "icons": [{ "name": "家庭影院", "url": "https://example.com/home.png" }]
+}
+```
+
+最多维护 30 个图库。图库地址需为公网 HTTPS 域名；单个 JSON 不超过 2 MiB、最多 5,000 个条目。不符合 HTTPS 要求、格式错误或重复的图标会被过滤。读取超时为 10 秒，重定向逐跳校验；单个图库失败不影响其他图库的搜索与选择。列表由服务端读取，不要求源站开启 CORS；图标元数据在 Cloudflare Cache API 中缓存 10 分钟，「刷新图标」可重新拉取源文件。
+
+### GitHub Token（选填）
+
+在「图标库 → GitHub Token」中保存、更换或移除 Token。Token 使用原有部署密钥加密保存在 KV，后台仅返回配置状态，不回显 Token，也不会将其加入图片 URL、公开订阅、播放器链接或日志。
+
+填写 Token 后，GitHub raw/blob 图库地址会转换为官方 Contents API 的只读请求；Token 仅发给 `https://api.github.com` 的文件读取端点，第三方图库和跨域重定向不会收到 Token。更换或移除 Token 会使用新的缓存版本。GitHub 支持通过此 API 返回文件原文；访问私有仓库时，细粒度 Token 需要对应仓库的 Contents 读取权限，无需写权限。参见 [GitHub Contents API](https://docs.github.com/en/rest/repos/contents#get-repository-content)。
+
+Token 主要提高 [GitHub API 请求额度](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api)，不保证提升单张图片下载速度。图片仍由浏览器直接加载公开 HTTPS 地址，Token 用于图标目录 JSON 的服务端读取；不填写时，默认的公开 raw 图库也可使用。
+
 ## 订阅接口
 
 ```http
@@ -125,7 +155,7 @@ Hills / RodelPlayer 已知参数未明确支持主线路的反向代理基础路
 
 ## 安全与存储边界
 
-- 全部业务数据存储在 `LIBRA_KV`。服务器合并为一份加密目录 `catalog:servers:v1`；订阅、后缀索引、管理员和会话分别存储。
+- 全部业务配置存储在 `LIBRA_KV`。服务器合并为一份加密目录 `catalog:servers:v1`；图库列表使用 `catalog:icon-libraries:v1`，GitHub Token 使用 `settings:github:v1`，均加密存储；订阅、后缀索引、管理员和会话分别存储。
 - 记录使用 AES-256-GCM 加密、随机 IV，并绑定 KV 键名作为附加认证数据。新写入的 v2 密文使用 HKDF-SHA256 从部署 Secret 派生密钥；同时兼容读取旧版 v1 密文。每个 isolate 最多缓存 4 个不可导出的 CryptoKey，不缓存解密后的业务数据。
 - 管理密码保存为随机盐 + PBKDF2-SHA256 校验结果，使用 100,000 次迭代及部署 Secret 提供的 HMAC pepper；不会保存明文管理密码。
 - 会话使用 256 位随机令牌，KV 中只以其 SHA-256 摘要索引，最长 12 小时。HTTPS 下使用 `__Host-libra_session` Cookie，带有 Secure、HttpOnly、SameSite=Strict、Path=/ 且不设置 Domain。本地 HTTP 开发使用普通 Cookie 名。
@@ -178,6 +208,8 @@ npx wrangler deploy --dry-run
 ```
 
 测试覆盖配置校验、Unicode 和特殊字符、五种 Scheme、密码与加密、旧密文迁移、HKDF 缓存、200 台服务器的读取次数、鉴权与 CSRF、限流、密钥不匹配及日志脱敏、订阅数据范围、更新删除和后缀复用。浏览器测试使用独立的临时 Worker / KV，覆盖首次初始化、服务器与订阅管理、删除被引用服务器后启停订阅、弹窗关闭后提示可见、未保存内容确认、HTML 错误页与网络异常、播放器链接、二维码解码与下载，以及 1440 px / 390 px 界面。CI 同时检查格式和重新生成类型后的差异。
+
+图标库测试另外覆盖默认数据只初始化一次、编辑删除、跨图库中英文搜索与排序、分页与部分加载失败、手动 Logo、Token 加密与脱敏、GitHub 仓库重定向、跨域凭据隔离、缓存刷新与凭据版本、下载体积和超时限制。
 
 前端使用 React、Lucide 与本地二维码库；构建时将哈希命名的 JS/CSS 内嵌为 Worker 静态响应，只需部署一个 Worker。业务数据始终通过 KV 绑定访问，不依赖浏览器存储。
 

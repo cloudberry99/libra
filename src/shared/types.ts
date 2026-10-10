@@ -33,5 +33,27 @@ export interface Subscription {
 export interface DashboardData {
   servers: ServerRecord[];
   subscriptions: Subscription[];
+  iconLibraries: IconLibrary[];
+}
+export interface IconLibrary {
+  id: string;
+  name: string;
+  url: string;
+  version: string;
+  createdAt: string;
+  updatedAt: string;
+}
+export interface LibraryIcon {
+  name: string;
+  url: string;
+}
+export interface IconCatalog {
+  icons: LibraryIcon[];
+  skipped: number;
+}
+export interface GitHubStatus {
+  configured: boolean;
+  version: string | null;
+  updatedAt: string | null;
 }
 export type PlayerId = 'senplayer' | 'eplayerx' | 'hills' | 'rodelplayer' | 'libra';
