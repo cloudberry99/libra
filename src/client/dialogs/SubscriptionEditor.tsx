@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react';
+import { useRef, useState, type FormEvent } from 'react';
 import { Link2, RefreshCw, Server } from 'lucide-react';
 import type { ServerRecord, Subscription } from '../../shared/types';
 import { validateSlug } from '../../shared/validation';
@@ -26,6 +26,7 @@ export function SubscriptionEditor({
   const [serverIds, setServerIds] = useState<string[]>(
     subscription?.serverIds.filter((id) => servers.some((server) => server.id === id)) ?? [],
   );
+  const initialSelection = useRef(JSON.stringify({ allServers, serverIds }));
   const [enabled, setEnabled] = useState(subscription?.enabled ?? true);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -37,10 +38,17 @@ export function SubscriptionEditor({
     setBusy(true);
     try {
       validateSlug(slug);
+      const selectionChanged = JSON.stringify({ allServers, serverIds }) !== initialSelection.current;
       const record = await api<Subscription>(
         `/api/subscriptions${subscription ? `/${subscription.id}` : ''}`,
         subscription ? 'PUT' : 'POST',
-        { name, slug, allServers, serverIds, enabled, version: subscription?.version },
+        {
+          name,
+          slug,
+          enabled,
+          version: subscription?.version,
+          ...(!subscription || selectionChanged ? { allServers, serverIds } : {}),
+        },
       );
       save(record);
       close();

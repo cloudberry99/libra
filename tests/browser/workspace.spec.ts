@@ -222,6 +222,15 @@ test('deleting a selected server cannot block subscription toggles, and delete t
   await navigate(page, '订阅链接');
   await card.getByRole('switch').click();
   await expect(card.getByRole('switch')).toHaveAttribute('aria-checked', 'false');
+  // The editor's enable switch must not resubmit a now-empty server selection.
+  await card.getByRole('button', { name: '管理链接' }).click();
+  await page.getByRole('dialog').getByRole('switch', { name: '启用订阅' }).click();
+  await page.getByRole('button', { name: '保存链接', exact: true }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(page.locator('.toast')).toHaveText('订阅链接已保存');
+  await expect(page.locator('.toast')).toBeVisible();
+  await expect(card.getByRole('switch')).toHaveAttribute('aria-checked', 'true');
+  expect(await (await page.request.get('/RegressionSelected1234')).json()).toEqual([]);
   await card.getByRole('button', { name: '删除 删除回归订阅', exact: true }).click();
   await page.getByRole('button', { name: '确认删除' }).click();
   await expect(page.getByRole('dialog')).toHaveCount(0);
