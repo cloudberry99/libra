@@ -148,10 +148,6 @@
 .player-option strong {
   font-size: 12px;
 }
-.player-option small {
-  font-size: 10px;
-  color: #888094;
-}
 .import-server p,
 .subscription-url code,
 .url-preview {

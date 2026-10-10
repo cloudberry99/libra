@@ -1,11 +1,11 @@
 import type { PlayerId, ServerConfig } from './types';
 
-export const PLAYERS: { id: PlayerId; name: string; initial: string; detail: string }[] = [
-  { id: 'libra', name: 'Libra', initial: 'L', detail: '完整配置 · v1' },
-  { id: 'senplayer', name: 'SenPlayer', initial: 'S', detail: '账号与多线路' },
-  { id: 'eplayerx', name: 'ePlayerX', initial: 'E', detail: '添加或更新服务器' },
-  { id: 'hills', name: 'Hills', initial: 'H', detail: '账号与多线路' },
-  { id: 'rodelplayer', name: '小幻播放器', initial: 'R', detail: 'RodelPlayer' },
+export const PLAYERS: { id: PlayerId; name: string; initial: string }[] = [
+  { id: 'libra', name: 'Libra', initial: 'L' },
+  { id: 'senplayer', name: 'SenPlayer', initial: 'S' },
+  { id: 'eplayerx', name: 'ePlayerX', initial: 'E' },
+  { id: 'hills', name: 'Hills', initial: 'H' },
+  { id: 'rodelplayer', name: '小幻播放器', initial: 'R' },
 ];
 export function base64url(value: string): string {
   const bytes = new TextEncoder().encode(value);

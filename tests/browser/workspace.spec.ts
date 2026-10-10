@@ -60,17 +60,17 @@ test('admin workflow, player payload, subscriptions and scannable QR on desktop 
   );
   expect(payload.credentials.password).toBe(' 中文 &+#% ');
   expect(payload.alternates[0].name).toBe('家中直连');
-  await page.getByRole('button', { name: /SenPlayer 账号与多线路/ }).click();
+  await page.getByRole('button', { name: /SenPlayer/ }).click();
   expect(await page.getByRole('link', { name: '打开 SenPlayer' }).getAttribute('href')).toMatch(
     /^senplayer:\/\/importserver/,
   );
-  await page.getByRole('button', { name: /ePlayerX 添加或更新服务器/ }).click();
+  await page.getByRole('button', { name: /ePlayerX/ }).click();
   expect(await page.getByRole('link', { name: '打开 ePlayerX' }).getAttribute('href')).toMatch(
     /^eplayerx:\/\/add-or-update/,
   );
-  await page.getByRole('button', { name: /Hills 账号与多线路/ }).click();
+  await page.getByRole('button', { name: /Hills/ }).click();
   await expect(page.getByRole('alert')).toContainText('基础路径');
-  await page.getByRole('button', { name: /小幻播放器 RodelPlayer/ }).click();
+  await page.getByRole('button', { name: /小幻播放器/ }).click();
   await expect(page.getByRole('alert')).toContainText('基础路径');
   await page.getByRole('button', { name: '关闭', exact: true }).click();
   // Fictional data only, used to inspect populated layouts.

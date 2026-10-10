@@ -649,9 +649,6 @@
   .player-option {
     padding: 14px 7px;
   }
-  .player-option small {
-    font-size: 8px;
-  }
   .player-option:last-child {
     grid-column: 1/-1;
     flex-direction: row;
@@ -664,9 +661,6 @@
     height: 30px;
     margin: 0;
     font-size: 15px;
-  }
-  .player-option:last-child small {
-    display: none;
   }
   .import-server {
     padding: 13px;

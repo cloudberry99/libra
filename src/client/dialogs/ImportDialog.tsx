@@ -41,7 +41,6 @@ export function ImportDialog({
             >
               <span className={`player-icon ${item.id}`}>{item.initial}</span>
               <strong>{item.name}</strong>
-              <small>{item.detail}</small>
               {player === item.id && <Check size={15} className="player-check" />}
             </button>
           ))}

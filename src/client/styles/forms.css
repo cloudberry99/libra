@@ -453,10 +453,6 @@
   font-weight: 550;
   color: #877591;
 }
-.player-option small {
-  font-size: 8px;
-  color: #b5aabd;
-}
 .player-check {
   position: absolute;
   right: 7px;
