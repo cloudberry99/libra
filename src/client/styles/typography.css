@@ -15,8 +15,7 @@
 .security-aside p,
 .panel-heading p,
 .auth-form > p,
-.auth-assurance,
-.checkbox-line > span {
+.auth-assurance {
   color: #777c93;
 }
 .server-title h3,
@@ -34,8 +33,7 @@
 .field-label,
 .setting-row strong,
 .security-aside strong,
-.subscription-notice strong,
-.checkbox-line {
+.subscription-notice strong {
   color: #626980;
 }
 .auth-form .button.full {

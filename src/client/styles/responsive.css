@@ -642,13 +642,6 @@
   .route-fields .field-label {
     font-size: 11px;
   }
-  .checkbox-line {
-    font-size: 11px;
-  }
-  .checkbox-line > span {
-    margin-left: 0;
-    font-size: 9px;
-  }
   .player-grid {
     grid-template-columns: repeat(2, 1fr);
     gap: 9px;

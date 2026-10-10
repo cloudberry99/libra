@@ -23,9 +23,6 @@ export function ServerEditor({
   const [logo, setLogo] = useState(original?.logo ?? '');
   const [username, setUsername] = useState(original?.credentials?.username ?? '');
   const [password, setPassword] = useState(original?.credentials?.password ?? '');
-  const [includePassword, setIncludePassword] = useState(
-    !server || original?.credentials?.password !== undefined,
-  );
   const [primary, setPrimary] = useState<Endpoint>(original?.primary ?? { url: '', name: '' });
   const [alternates, setAlternates] = useState<Endpoint[]>(
     original?.alternates?.map((line) => ({ ...line })) ?? [],
@@ -34,7 +31,7 @@ export function ServerEditor({
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const requestClose = useEditorClose(
-    { name, note, logo, username, password, includePassword, primary, alternates, enabled },
+    { name, note, logo, username, password, primary, alternates, enabled },
     close,
     busy,
   );
@@ -48,7 +45,7 @@ export function ServerEditor({
         name,
         note,
         logo,
-        credentials: { username, ...(includePassword ? { password } : {}) },
+        credentials: { username, ...(password.length > 0 ? { password } : {}) },
         primary,
         alternates,
       });
@@ -98,12 +95,12 @@ export function ServerEditor({
               />
             </Field>
           </div>
-          <Field label="Logo 地址" optional hint="仅支持 HTTPS；图片站点会收到你的浏览器请求。">
+          <Field label="Logo 地址" optional>
             <input
               value={logo}
               onChange={(event) => setLogo(event.target.value)}
               type="url"
-              placeholder="https://example.com/logo.png"
+              placeholder="仅支持 HTTPS，例如：https://example.com/logo.png"
               maxLength={2048}
             />
           </Field>
@@ -121,14 +118,6 @@ export function ServerEditor({
               <PasswordInput value={password} onChange={setPassword} placeholder="服务器登录密码" />
             </Field>
           </div>
-          <label className="checkbox-line">
-            <input
-              type="checkbox"
-              checked={includePassword}
-              onChange={(event) => setIncludePassword(event.target.checked)}
-            />
-            在配置中提供密码<span>留空表示空密码；取消勾选则省略此字段</span>
-          </label>
           <div className="section-divider" />
           <div className="form-section-heading">
             <Waypoints size={17} />
