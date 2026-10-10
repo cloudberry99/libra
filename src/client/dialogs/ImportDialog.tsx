@@ -39,7 +39,9 @@ export function ImportDialog({
               onClick={() => setPlayer(item.id)}
               aria-pressed={player === item.id}
             >
-              <span className={`player-icon ${item.id}`}>{item.initial}</span>
+              <span className={`player-icon ${item.id}`} aria-hidden="true">
+                {item.initial}
+              </span>
               <strong>{item.name}</strong>
               {player === item.id && <Check size={15} className="player-check" />}
             </button>

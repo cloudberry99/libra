@@ -62,4 +62,4 @@ export interface GitHubStatus {
   version: string | null;
   updatedAt: string | null;
 }
-export type PlayerId = 'senplayer' | 'eplayerx' | 'hills' | 'rodelplayer' | 'libra';
+export type PlayerId = 'senplayer' | 'eplayerx' | 'rex' | 'hills' | 'rodelplayer' | 'libra';

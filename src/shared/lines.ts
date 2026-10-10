@@ -14,10 +14,13 @@ export function newAlternateLines(
       /* Keep unfinished manual rows in the form. */
     }
   }
-  return discovered.filter((line) => {
+  const additional: Endpoint[] = [];
+  for (const line of discovered) {
     const url = baseURL(line.url);
-    if (seen.has(url)) return false;
+    if (seen.has(url)) continue;
     seen.add(url);
-    return true;
-  });
+    // Use the same canonical address for comparison and the saved draft.
+    additional.push({ ...line, url });
+  }
+  return additional;
 }

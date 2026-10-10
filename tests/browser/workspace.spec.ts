@@ -55,6 +55,14 @@ test('admin workflow, player payload, subscriptions and scannable QR on desktop 
   await expect(page.locator('.toast')).toHaveText('服务器已保存');
   await expect(page.locator('.toast')).toBeVisible();
   await page.getByRole('button', { name: '导入播放器' }).click();
+  await expect(page.locator('.player-option strong')).toHaveText([
+    'Libra',
+    'SenPlayer',
+    'EplayerX',
+    'Rex',
+    'Hills',
+    '小幻播放器',
+  ]);
   // The toast existed before this modal opened and must be above its backdrop.
   const devtools = await page.context().newCDPSession(page);
   await devtools.send('DOM.enable');
@@ -76,10 +84,13 @@ test('admin workflow, player payload, subscriptions and scannable QR on desktop 
   expect(await page.getByRole('link', { name: '打开 SenPlayer' }).getAttribute('href')).toMatch(
     /^senplayer:\/\/importserver/,
   );
-  await page.getByRole('button', { name: /ePlayerX/ }).click();
-  expect(await page.getByRole('link', { name: '打开 ePlayerX' }).getAttribute('href')).toMatch(
+  await page.getByRole('button', { name: 'EplayerX', exact: true }).click();
+  expect(await page.getByRole('link', { name: '打开 EplayerX' }).getAttribute('href')).toMatch(
     /^eplayerx:\/\/add-or-update/,
   );
+  await page.getByRole('button', { name: 'Rex', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('Rex');
+  await expect(page.getByRole('alert')).toContainText('基础路径');
   await page.getByRole('button', { name: /Hills/ }).click();
   await expect(page.getByRole('alert')).toContainText('基础路径');
   await page.getByRole('button', { name: /小幻播放器/ }).click();
@@ -190,6 +201,57 @@ test('admin workflow, player payload, subscriptions and scannable QR on desktop 
   expect(pageErrors).toEqual([]);
 });
 
+test('Rex follows EplayerX, opens and copies the correct import URL with a balanced mobile layout', async ({
+  page,
+}) => {
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+  await login(page);
+  await page
+    .locator('.server-card')
+    .filter({ hasText: '星河放映室' })
+    .getByRole('button', { name: '导入播放器' })
+    .click();
+  await expect(page.locator('.player-option strong')).toHaveText([
+    'Libra',
+    'SenPlayer',
+    'EplayerX',
+    'Rex',
+    'Hills',
+    '小幻播放器',
+  ]);
+  await page.getByRole('button', { name: 'Rex', exact: true }).click();
+  const open = page.getByRole('link', { name: '打开 Rex', exact: true });
+  const href = (await open.getAttribute('href'))!;
+  const parsed = new URL(href);
+  expect(parsed.protocol).toBe('rex:');
+  expect(parsed.host).toBe('import');
+  expect(Object.fromEntries(parsed.searchParams)).toEqual({
+    type: 'emby',
+    username: 'demo',
+    scheme: 'https',
+    host: 'cinema.example.com',
+    port: '443',
+    title: '主线路',
+  });
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await page.screenshot({ path: 'test-results/rex-import-desktop.png', fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(open).toBeVisible();
+  expect(await page.getByRole('dialog').evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+  const options = await page.locator('.player-option').evaluateAll((els) =>
+    els.map((el) => ({
+      top: el.getBoundingClientRect().top,
+      width: el.getBoundingClientRect().width,
+    })),
+  );
+  expect(options[4].top).toBe(options[5].top);
+  expect(options[5].width).toBe(options[0].width);
+  await page.screenshot({ path: 'test-results/rex-import-mobile.png', fullPage: true });
+  await page.getByRole('button', { name: '复制导入链接', exact: true }).click();
+  await expect(page.locator('.toast')).toHaveText('已复制到剪贴板');
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(href);
+});
+
 test('server-side line discovery merges without replacing manual lines, stays in the draft and handles errors', async ({
   page,
 }) => {
@@ -212,7 +274,9 @@ test('server-side line discovery merges without replacing manual lines, stays in
         lines: [
           { url: 'https://discovery.example.com/emby', name: '原主线路' },
           { url: 'https://manual.example.com:443/emby/', name: '不能覆盖手动名称' },
-          { url: 'https://backup.example.com/emby', name: '备用直连' },
+          { url: 'https://BACKUP.example.com:443/', name: '备用直连' },
+          { url: 'https://backup.example.com', name: '重复根地址' },
+          { url: 'https://backup.example.com/', name: '重复末尾斜杠' },
           { url: 'http://192.168.1.10:8096', name: '家中线路' },
         ],
         skipped: 0,
@@ -239,6 +303,9 @@ test('server-side line discovery merges without replacing manual lines, stays in
   await expect(page.locator('.line-discovery-message')).toHaveText('已添加 2 条备用线路，保存后生效');
   await expect(page.getByPlaceholder('例如：家中直连')).toHaveCount(3);
   await expect(page.getByPlaceholder('例如：家中直连').nth(0)).toHaveValue('手动名称');
+  await expect(page.getByPlaceholder('http://192.168.1.10:8096').nth(1)).toHaveValue(
+    'https://backup.example.com',
+  );
   await expect(page.getByPlaceholder('主线路', { exact: true })).toHaveValue('我的主线路');
   expect(sent[0]).toEqual({
     primary: { url: 'https://discovery.example.com/emby' },

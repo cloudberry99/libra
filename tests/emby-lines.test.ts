@@ -8,6 +8,61 @@ const accessToken = 'fake-emby-access-token';
 const deviceId = 'test-device-id';
 const sample = { ok: true, data: [{ name: '备用线路', url: 'https://backup.example.com/emby' }] };
 
+test('discovered root addresses deduplicate across default ports and trailing slashes before reaching the client', async (t) => {
+  t.mock.method(globalThis, 'fetch', async (input: string | URL | Request) => {
+    const path = new URL(String(input)).pathname;
+    if (path.endsWith('/AuthenticateByName')) return Response.json({ AccessToken: accessToken });
+    if (path.endsWith('/Logout')) return new Response(null, { status: 204 });
+    return Response.json({
+      ok: true,
+      data: [
+        { url: 'https://www.example.com:443/', name: '优先线路' },
+        { url: 'https://www.example.com', name: '重复一' },
+        { url: 'https://WWW.example.com/', name: '重复二' },
+        { url: 'https://wwww.example.com', name: '另一个主机' },
+        { url: 'http://www.example.com:80/', name: 'HTTP 线路' },
+        { url: 'http://www.example.com', name: '重复三' },
+      ],
+    });
+  });
+  assert.deepEqual(await discoverEmbyLines(connection, deviceId), {
+    lines: [
+      { url: 'https://www.example.com', name: '优先线路' },
+      { url: 'https://wwww.example.com', name: '另一个主机' },
+      { url: 'http://www.example.com', name: 'HTTP 线路' },
+    ],
+    skipped: 0,
+  });
+});
+
+test('merging discovered lines emits canonical URLs and preserves the first name, ordering and manual drafts', () => {
+  const primary = { url: 'https://primary.example.com:443/' };
+  const existing = [
+    { url: 'http://manual.example.com:80/', name: '我的名称' },
+    { url: '', name: '未填完' },
+  ];
+  const discovered = [
+    { url: 'https://PRIMARY.example.com', name: '主线路重复' },
+    { url: 'http://manual.example.com', name: '不能覆盖手动名称' },
+    { url: 'https://WWW.example.com:443/', name: '首次名称' },
+    { url: 'https://www.example.com', name: '重复名称' },
+    { url: 'https://www.example.com/', name: '再次重复' },
+    { url: 'https://www.example.com:8443/', name: '另一个端口' },
+    { url: 'https://www.example.com/emby/', name: '反代路径' },
+    { url: 'https://wwww.example.com/', name: '另一个主机' },
+  ];
+  const originals = structuredClone({ primary, existing, discovered });
+  const additional = newAlternateLines(primary, existing, discovered);
+  assert.deepEqual(additional, [
+    { url: 'https://www.example.com', name: '首次名称' },
+    { url: 'https://www.example.com:8443', name: '另一个端口' },
+    { url: 'https://www.example.com/emby', name: '反代路径' },
+    { url: 'https://wwww.example.com', name: '另一个主机' },
+  ]);
+  assert.deepEqual({ primary, existing, discovered }, originals);
+  assert.deepEqual(newAlternateLines(primary, [...existing, ...additional], discovered), []);
+});
+
 test('discovery validates primary and account without altering passwords or stored LAN support', () => {
   const input = (url: string, password: unknown = connection.password) => ({
     primary: { url },

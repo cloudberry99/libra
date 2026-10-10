@@ -16,7 +16,7 @@
 - 主线路、最多 32 条备用线路、备注和可选 Logo；支持局域网、IPv6、端口与反向代理路径。
 - 从主线路登录获取服务器公布的备用线路，固定 `LibraManager` UA 和持久化 DeviceId，去重后合并到表单。
 - 可维护的图标库，支持跨图库搜索、分页选择 Logo 和手动输入图片 URL；可选 GitHub Token。
-- Libra、SenPlayer、ePlayerX、Hills 和 RodelPlayer（小幻播放器）的 URL Scheme 导入。
+- Libra、SenPlayer、EplayerX、Rex、Hills 和 RodelPlayer（小幻播放器）的 URL Scheme 导入。
 - 多条公开订阅：全部或指定服务器、随机或自定义后缀、停用、删除、更换后缀。
 - 订阅二维码、复制链接、下载二维码。二维码完全在浏览器本地生成。
 - 删除或更换订阅后释放旧后缀，允许重新分配。
@@ -152,17 +152,18 @@ GET https://your-worker.workers.dev/<suffix>
 
 ## 播放器协议
 
-| 播放器      | 导入入口                           | 支持范围与说明                                                                  |
-| ----------- | ---------------------------------- | ------------------------------------------------------------------------------- |
-| Libra       | `libra://import/server?v=1&data=…` | UTF-8 JSON → Base64URL（无填充）；保留所有线路和凭据，按 v1 规范排除 Logo       |
-| SenPlayer   | `senplayer://importserver?…`       | 服务器名称、备注、图标、账号、完整主地址及备用线路                              |
-| ePlayerX    | `eplayerx://add-or-update?…`       | 名称、备注、账号、主地址、备用线路；备用地址或名称含原始逗号/分号时提示手动处理 |
-| Hills       | `hills://import?…`                 | 主地址拆分为 scheme/host/port，附账号和备用线路                                 |
-| RodelPlayer | `rodelplayer://import?…`           | 与 Hills 同类参数，界面名称为小幻播放器                                         |
+| 播放器      | 导入入口                           | 支持范围与说明                                                                          |
+| ----------- | ---------------------------------- | --------------------------------------------------------------------------------------- |
+| Libra       | `libra://import/server?v=1&data=…` | UTF-8 JSON → Base64URL（无填充）；保留所有线路和凭据，按 v1 规范排除 Logo               |
+| SenPlayer   | `senplayer://importserver?…`       | 服务器名称、备注、图标、账号、完整主地址及备用线路                                      |
+| EplayerX    | `eplayerx://add-or-update?…`       | 名称、备注、账号、主地址、备用线路；备用地址或名称含原始逗号/分号时提示手动处理         |
+| Rex         | `rex://import?…`                   | 主地址拆分为 scheme/host/port，附账号及编号备用线路；title 为主线路名称，默认「主线路」 |
+| Hills       | `hills://import?…`                 | 主地址拆分为 scheme/host/port，附账号和备用线路                                         |
+| RodelPlayer | `rodelplayer://import?…`           | 与 Hills 同类参数，界面名称为小幻播放器                                                 |
 
-Libra 适配依据使用者提供的 v1 协议，解析链接后由播放器展示添加表单。其余四种适配参考公开的 [emby-keepalive 协议生成逻辑](https://github.com/SolarisAA/emby-keepalive)，独立实现，不复制其界面或业务代码。
+Libra 适配依据使用者提供的 v1 协议，解析链接后由播放器展示添加表单。其余五种适配参考公开的 [emby-keepalive 协议生成逻辑](https://github.com/SolarisAA/emby-keepalive)，独立实现，不复制其界面或业务代码。Rex 的参数参考仓库的 [rexUrl 适配器](https://github.com/SolarisAA/emby-keepalive/blob/main/public/index.html#L918-L946)，未命名的备用线路使用「线路1」「线路2」等默认名称。
 
-Hills / RodelPlayer 已知参数未明确支持主线路的反向代理基础路径。本项目遇到 `/emby` 这类主线路时会提示手动导入，避免静默丢掉路径。其他播放器未定义的字段不会随意附加。五种 Scheme 均有编码测试，但没有在真实 iOS/Windows 播放器中自动验证；播放器版本可能影响接收行为。
+Rex / Hills / RodelPlayer 已知参数未明确支持主线路的反向代理基础路径。本项目遇到 `/emby` 这类主线路时会提示手动导入，避免静默丢掉路径。其他播放器未定义的字段不会随意附加。六种 Scheme 均有编码测试，但没有在真实 iOS/Windows 播放器中自动验证；播放器版本可能影响接收行为。
 
 ## 安全与存储边界
 
@@ -222,7 +223,7 @@ npm run test:browser
 npx wrangler deploy --dry-run
 ```
 
-测试覆盖配置校验、Unicode 和特殊字符、五种 Scheme、密码与加密、旧密文迁移、HKDF 缓存、200 台服务器的读取次数、鉴权与 CSRF、限流、密钥不匹配及日志脱敏、订阅数据范围、更新删除和后缀复用。浏览器测试使用独立的临时 Worker / KV，覆盖首次初始化、服务器与订阅管理、删除被引用服务器后启停订阅、弹窗关闭后提示可见、未保存内容确认、HTML 错误页与网络异常、播放器链接、二维码解码与下载，以及 1440 px / 390 px 界面。CI 同时检查格式和重新生成类型后的差异。
+测试覆盖配置校验、Unicode 和特殊字符、六种 Scheme、密码与加密、旧密文迁移、HKDF 缓存、200 台服务器的读取次数、鉴权与 CSRF、限流、密钥不匹配及日志脱敏、订阅数据范围、更新删除和后缀复用。浏览器测试使用独立的临时 Worker / KV，覆盖首次初始化、服务器与订阅管理、删除被引用服务器后启停订阅、弹窗关闭后提示可见、未保存内容确认、HTML 错误页与网络异常、播放器链接、二维码解码与下载，以及 1440 px / 390 px 界面。CI 同时检查格式和重新生成类型后的差异。
 
 图标库测试另外覆盖默认数据只初始化一次、编辑删除、跨图库中英文搜索与排序、分页与部分加载失败、手动 Logo、Token 加密与脱敏、GitHub 仓库重定向、跨域凭据隔离、缓存刷新与凭据版本、下载体积和超时限制。
 

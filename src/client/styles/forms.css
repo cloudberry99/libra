@@ -503,6 +503,10 @@
   background: #fbefde;
   color: #c0a077;
 }
+.player-icon.rex {
+  background: #e8eefb;
+  color: #8c9dcc;
+}
 .player-icon.hills {
   background: #e7f3ee;
   color: #8aac9d;

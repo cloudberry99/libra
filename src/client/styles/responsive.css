@@ -649,14 +649,14 @@
   .player-option {
     padding: 14px 7px;
   }
-  .player-option:last-child {
+  .player-option:last-child:nth-child(odd) {
     grid-column: 1/-1;
     flex-direction: row;
     justify-content: center;
     gap: 10px;
     padding: 11px;
   }
-  .player-option:last-child .player-icon {
+  .player-option:last-child:nth-child(odd) .player-icon {
     width: 30px;
     height: 30px;
     margin: 0;

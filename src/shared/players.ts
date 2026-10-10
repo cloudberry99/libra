@@ -3,7 +3,8 @@ import type { PlayerId, ServerConfig } from './types';
 export const PLAYERS: { id: PlayerId; name: string; initial: string }[] = [
   { id: 'libra', name: 'Libra', initial: 'L' },
   { id: 'senplayer', name: 'SenPlayer', initial: 'S' },
-  { id: 'eplayerx', name: 'ePlayerX', initial: 'E' },
+  { id: 'eplayerx', name: 'EplayerX', initial: 'E' },
+  { id: 'rex', name: 'Rex', initial: 'R' },
   { id: 'hills', name: 'Hills', initial: 'H' },
   { id: 'rodelplayer', name: '小幻播放器', initial: 'R' },
 ];
@@ -49,7 +50,7 @@ export function playerLink(player: PlayerId, config: ServerConfig): { url: strin
       if (alternates.some((line) => /[,;]/.test(line.url + (line.name ?? '')))) {
         return {
           url: '',
-          warning: 'ePlayerX 的备用线路格式不能无损表达逗号或分号，请使用 Libra 导入或手动填写。',
+          warning: 'EplayerX 的备用线路格式不能无损表达逗号或分号，请使用 Libra 导入或手动填写。',
         };
       }
       put('backupHref', alternates.map((line) => `${line.url};${line.name ?? ''}`).join(','));
@@ -60,16 +61,17 @@ export function playerLink(player: PlayerId, config: ServerConfig): { url: strin
   if (primary.pathname !== '/') {
     return {
       url: '',
-      warning: `${player === 'hills' ? 'Hills' : '小幻播放器'} 已知导入协议未明确支持主线路的基础路径，请在播放器中手动添加完整地址，或使用 Libra / SenPlayer 导入。`,
+      warning: `${PLAYERS.find((item) => item.id === player)!.name} 已知导入协议未明确支持主线路的基础路径，请在播放器中手动添加完整地址，或使用 Libra / SenPlayer 导入。`,
     };
   }
   put('scheme', primary.protocol.slice(0, -1));
   put('host', primary.hostname);
   put('port', primary.port || (primary.protocol === 'https:' ? '443' : '80'));
-  put('title', config.name);
+  // Rex names the primary line with title; its source adapter defaults to 主线路.
+  put('title', player === 'rex' ? config.primary.name || '主线路' : config.name);
   alternates.forEach((line, index) => {
     put(`line${index + 1}`, line.url);
-    put(`line${index + 1}title`, line.name);
+    put(`line${index + 1}title`, player === 'rex' ? line.name || `线路${index + 1}` : line.name);
   });
   return { url: `${player}://import?${params}` };
 }

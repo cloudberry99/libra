@@ -42,6 +42,9 @@ export function baseURL(value: unknown): string {
   ) {
     throw new InputError('线路不能内嵌账号密码，端口必须为 1–65535');
   }
+  // URL normalizes host casing, IPv6 and default ports (HTTPS 443 / HTTP 80).
+  // Only remove trailing path slashes: distinct hosts, schemes, nondefault
+  // ports and reverse-proxy paths must remain distinct connection endpoints.
   return url.origin + url.pathname.replace(/\/+$/, '');
 }
 function endpoint(value: unknown): Endpoint {

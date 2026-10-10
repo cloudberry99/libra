@@ -55,7 +55,7 @@ test('Libra v1 preserves UTF-8 and multi-line configuration, excludes logos', ()
   assert.deepEqual(decoded, payload);
   assert.equal(decoded.credentials!.password, config.credentials.password);
 });
-test('the other four player links preserve credentials after one query decode', () => {
+test('non-Libra player links preserve credentials after one query decode', () => {
   const validated = validateConfig({ ...config, primary: { url: 'http://[fd00::1]:8096' } });
   for (const player of PLAYERS.filter((item) => item.id !== 'libra')) {
     const result = playerLink(player.id, validated);
@@ -74,7 +74,7 @@ test('the other four player links preserve credentials after one query decode', 
     eplayer.searchParams.get('backupHref'),
     'http://192.168.1.10:8096;家中直连,http://[fd00::1]:8096/emby;',
   );
-  for (const player of ['hills', 'rodelplayer'] as const) {
+  for (const player of ['rex', 'hills', 'rodelplayer'] as const) {
     const url = new URL(playerLink(player, validated).url);
     assert.equal(url.searchParams.get('host'), '[fd00::1]');
     assert.equal(url.searchParams.get('port'), '8096');
@@ -82,10 +82,62 @@ test('the other four player links preserve credentials after one query decode', 
     assert.equal(playerLink(player, validateConfig(config)).url, '');
   }
 });
-test('ambiguous ePlayerX backup separators are not silently corrupted', () => {
+test('ambiguous EplayerX backup separators are not silently corrupted', () => {
   const value = validateConfig({ ...config, alternates: [{ url: 'http://example.com', name: 'a,b' }] });
   assert.equal(playerLink('eplayerx', value).url, '');
   assert.ok(playerLink('eplayerx', value).warning);
+});
+test('Rex preserves credentials and numbered lines, names the primary separately and applies documented title defaults', () => {
+  const validated = validateConfig({
+    ...config,
+    name: '媒体库名称',
+    primary: { url: 'https://[2001:db8::1]:8920', name: '主线路 & + # %' },
+    alternates: [
+      { url: 'https://backup.example.com/emby', name: '直连 &+,;#%' },
+      { url: 'http://192.168.1.10:8096' },
+    ],
+  });
+  const url = new URL(playerLink('rex', validated).url);
+  assert.equal(url.protocol, 'rex:');
+  assert.equal(url.host, 'import');
+  assert.deepEqual(Object.fromEntries(url.searchParams), {
+    type: 'emby',
+    username: 'demo',
+    password: config.credentials.password,
+    scheme: 'https',
+    host: '[2001:db8::1]',
+    port: '8920',
+    title: '主线路 & + # %',
+    line1: 'https://backup.example.com/emby',
+    line1title: '直连 &+,;#%',
+    line2: 'http://192.168.1.10:8096',
+    line2title: '线路2',
+  });
+  for (const [primary, port] of [
+    ['https://example.com', '443'],
+    ['http://example.com', '80'],
+  ]) {
+    const minimal = new URL(
+      playerLink('rex', validateConfig({ type: 'emby', primary: { url: primary } })).url,
+    );
+    assert.equal(minimal.searchParams.get('port'), port);
+    assert.equal(minimal.searchParams.get('title'), '主线路');
+    assert.equal(minimal.searchParams.has('username'), false);
+    assert.equal(minimal.searchParams.has('password'), false);
+    assert.equal(minimal.searchParams.has('line1'), false);
+  }
+  const emptyPassword = new URL(playerLink('rex', { ...validated, credentials: { password: '' } }).url);
+  assert.equal(emptyPassword.searchParams.get('password'), '');
+  const many = validateConfig({
+    ...validated,
+    alternates: Array.from({ length: 32 }, (_, index) => ({ url: `https://line-${index}.example.com` })),
+  });
+  const numbered = new URL(playerLink('rex', many).url);
+  assert.equal(numbered.searchParams.get('line32'), 'https://line-31.example.com');
+  assert.equal(numbered.searchParams.get('line32title'), '线路32');
+  const unsupported = playerLink('rex', validateConfig(config));
+  assert.equal(unsupported.url, '');
+  assert.match(unsupported.warning!, /Rex.*基础路径/);
 });
 test('reject invalid endpoints; allow LAN, IPv6, proxy paths and encoded whitespace', () => {
   for (const value of [
@@ -131,6 +183,39 @@ test('deduplicate normalized routes while keeping first occurrence and priority'
       alternates: Array.from({ length: 33 }, () => ({ url: 'http://example.com' })),
     }),
   );
+});
+test('equivalent base addresses share one canonical URL without merging different connection targets', () => {
+  for (const [canonical, variants] of [
+    [
+      'https://www.example.com',
+      [
+        'https://www.example.com',
+        'https://www.example.com/',
+        'https://www.example.com:443',
+        'HTTPS://WWW.EXAMPLE.COM:443///',
+      ],
+    ],
+    [
+      'http://www.example.com',
+      ['http://www.example.com', 'http://www.example.com/', 'http://www.example.com:80/'],
+    ],
+    ['https://www.example.com/emby', ['https://www.example.com/emby/', 'https://WWW.example.com:443/emby']],
+    ['https://[2001:db8::1]', ['https://[2001:0db8:0:0:0:0:0:1]:443/', 'https://[2001:db8::1]']],
+  ] as const) {
+    for (const url of variants) assert.equal(baseURL(url), canonical);
+  }
+  const distinct = [
+    'https://www.example.com',
+    'https://wwww.example.com',
+    'https://example.com',
+    'http://www.example.com',
+    'https://www.example.com:80',
+    'https://www.example.com:8443',
+    'http://www.example.com:443',
+    'https://www.example.com/emby',
+    'https://www.example.com/Emby',
+  ];
+  assert.equal(new Set(distinct.map(baseURL)).size, distinct.length);
 });
 test('strong admin passwords and alphanumeric slugs', () => {
   for (const password of ['Aa1!abc', 'abcdefgh1', '12345678!', 'Abcdefgh ', 'a'.repeat(129) + '1!'])
