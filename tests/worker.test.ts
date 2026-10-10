@@ -1,7 +1,8 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
-import { build } from 'esbuild';
+import type { Miniflare } from 'miniflare';
+import { createTestWorker } from '../scripts/test-runtime.mjs';
+import { SERVER_CATALOG_KEY } from '../src/worker/storage';
 import { randomBytes } from 'node:crypto';
 
 let worker: Miniflare;
@@ -50,29 +51,7 @@ async function createServer(name = '家庭媒体库', enabled = true) {
   return read(response);
 }
 before(async () => {
-  const bundled = await build({
-    entryPoints: ['src/worker/index.ts'],
-    bundle: true,
-    write: false,
-    platform: 'neutral',
-    target: 'es2022',
-    format: 'esm',
-    external: ['node:crypto'],
-  });
-  const options = convertV4MiniflareOptions({
-    modules: true,
-    script: bundled.outputFiles[0].text,
-    compatibilityDate: '2026-10-10',
-    compatibilityFlags: ['nodejs_compat'],
-    bindings: { APP_SECRET: secret },
-    kvNamespaces: ['LIBRA_KV'],
-    ratelimits: {
-      AUTH_LIMITER: { namespace_id: '1', simple: { limit: 10, period: 60 } },
-      PUBLIC_LIMITER: { namespace_id: '2', simple: { limit: 120, period: 60 } },
-    },
-  });
-  options.workers[0].dev.stripCfConnectingIp = false;
-  worker = new Miniflare(options);
+  worker = await createTestWorker({ secret });
 });
 after(async () => {
   await worker?.dispose();
@@ -87,6 +66,7 @@ test('unauthenticated requests cannot read or change admin data, and headers pre
   assert.equal(page.status, 200);
   assert.match(await page.text(), /Libra/);
   assert.match(page.headers.get('Content-Security-Policy')!, /frame-ancestors 'none'/);
+  assert.match(page.headers.get('Content-Security-Policy')!, /img-src 'self' https: data:;/);
   assert.equal(page.headers.get('Referrer-Policy'), 'no-referrer');
   assert.equal(page.headers.get('Access-Control-Allow-Origin'), null);
 });
@@ -113,6 +93,8 @@ test('first-time setup requires deployment key, strong password and matching ori
   const response = await request('/api/auth/setup', 'POST', { setupKey: secret, password: 'Abcdef12!' });
   assert.equal(response.status, 200, await response.clone().text());
   const setCookie = response.headers.get('Set-Cookie')!;
+  assert.match(setCookie, /^__Host-libra_session=/);
+  assert.ok(!setCookie.includes('Domain='));
   for (const flag of ['HttpOnly', 'SameSite=Strict', 'Secure', 'Path=/']) assert.ok(setCookie.includes(flag));
   cookie = setCookie.split(';')[0];
   assert.equal((await request('/api/me')).status, 200);
@@ -124,7 +106,7 @@ test('first-time setup requires deployment key, strong password and matching ori
 test('credentials are encrypted in KV and raw bodies or cross-origin changes rejected', async () => {
   const server = await createServer();
   const kv = await worker.getKVNamespace('LIBRA_KV');
-  const raw = (await kv.get(`server:${server.id}`)) as string | null;
+  const raw = (await kv.get(SERVER_CATALOG_KEY)) as string | null;
   assert.ok(raw);
   assert.equal(raw.includes('demo'), false);
   assert.equal(raw.includes('media.example'), false);
@@ -236,6 +218,70 @@ test('all-server feeds reflect updates, disabled records and deleted servers', a
   );
   const after = (await (await request(`/${sub.slug}`)).json()) as Data[];
   assert.ok(!after.some((item) => item.name === 'Changed'));
+});
+test('a selected subscription can be disabled, enabled and rotated after its last server is deleted', async () => {
+  const selected = await createServer('Deleted selection');
+  const created = await request('/api/subscriptions', 'POST', {
+    name: 'Selected then deleted',
+    slug: 'DeletedSelected123',
+    allServers: false,
+    serverIds: [selected.id],
+  });
+  assert.equal(created.status, 201);
+  let sub = await read(created);
+  assert.equal(
+    (await request(`/api/servers/${selected.id}`, 'DELETE', { version: selected.version })).status,
+    200,
+  );
+  assert.deepEqual(await read(await request(`/${sub.slug}`)), []);
+  for (const enabled of [false, true, false]) {
+    const updated = await request(`/api/subscriptions/${sub.id}`, 'PUT', { version: sub.version, enabled });
+    assert.equal(updated.status, 200, await updated.clone().text());
+    sub = await read(updated);
+    assert.equal(
+      (await request(`/${sub.slug}`, 'GET', undefined, { auth: false })).status,
+      enabled ? 200 : 404,
+    );
+    assert.equal(
+      (await read(await request('/api/dashboard'))).subscriptions.find((row: Data) => row.id === sub.id)
+        .enabled,
+      enabled,
+    );
+  }
+  const rotated = await request(`/api/subscriptions/${sub.id}`, 'PUT', {
+    version: sub.version,
+    slug: 'DeletedRotated123',
+  });
+  assert.equal(rotated.status, 200);
+  sub = await read(rotated);
+  // New or explicitly changed selections must still reject missing IDs.
+  assert.equal(
+    (await request(`/api/subscriptions/${sub.id}`, 'PUT', { version: sub.version, serverIds: [selected.id] }))
+      .status,
+    400,
+  );
+  assert.equal(
+    (await request(`/api/subscriptions/${sub.id}`, 'PUT', { version: sub.version, serverIds: null })).status,
+    400,
+  );
+  assert.equal(
+    (
+      await request('/api/subscriptions', 'POST', {
+        name: 'Invalid',
+        allServers: false,
+        serverIds: [selected.id],
+      })
+    ).status,
+    400,
+  );
+  assert.equal(
+    (await request(`/api/subscriptions/${sub.id}`, 'DELETE', { version: sub.version })).status,
+    200,
+  );
+  assert.equal(
+    (await request('/api/subscriptions', 'POST', { name: 'Reassigned', slug: sub.slug })).status,
+    201,
+  );
 });
 test('login rate limiting uses IP and protects repeated guesses', async () => {
   for (let i = 0; i < 10; i++)

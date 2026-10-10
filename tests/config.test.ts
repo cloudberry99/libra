@@ -1,8 +1,16 @@
 import test from 'node:test';
+import './helpers/webcrypto';
 import assert from 'node:assert/strict';
 import { baseURL, validateConfig, validatePassword, validateSlug } from '../src/shared/validation';
 import { playerLink, PLAYERS } from '../src/shared/players';
-import { seal, unseal, hashPassword, checkPassword } from '../src/worker/crypto';
+import {
+  seal,
+  unseal,
+  hashPassword,
+  checkPassword,
+  StorageDecryptionError,
+  StorageFormatError,
+} from '../src/worker/crypto';
 
 const config = {
   type: 'emby',
@@ -137,11 +145,20 @@ test('encrypted data is authenticated and tied to both secret and KV key', async
   assert.equal(encrypted.includes('demo'), false);
   assert.equal(encrypted.includes(config.credentials.password), false);
   assert.deepEqual(await unseal('secret-1', 'server:1', encrypted), config);
-  await assert.rejects(unseal('secret-2', 'server:1', encrypted));
-  await assert.rejects(unseal('secret-1', 'server:2', encrypted));
+  assert.equal(JSON.parse(encrypted).v, 2);
+  await assert.rejects(unseal('secret-2', 'server:1', encrypted), StorageDecryptionError);
+  await assert.rejects(unseal('secret-1', 'server:2', encrypted), StorageDecryptionError);
   const tampered = JSON.parse(encrypted);
-  tampered.data = `ff${tampered.data.slice(2)}`;
+  tampered.data = `${tampered.data[0] === 'A' ? 'B' : 'A'}${tampered.data.slice(1)}`;
   await assert.rejects(unseal('secret-1', 'server:1', JSON.stringify(tampered)));
+});
+test('Logo URLs require HTTPS and cannot embed credentials', () => {
+  for (const logo of ['http://example.com/logo.png', 'https://user:pass@example.com/a', 'data:image/png,a'])
+    assert.throws(() => validateConfig({ ...config, logo }));
+});
+test('invalid ciphertext is reported separately from authenticated-decryption failure', async () => {
+  for (const value of ['broken', 'null', '{"v":3}', '{"v":1,"iv":"zz","data":"00"}'])
+    await assert.rejects(unseal('secret', 'admin', value), StorageFormatError);
 });
 test('password hashing uses independent salts and a deployment-secret pepper', async () => {
   const first = await hashPassword('Abcd1234!', 'secret');

@@ -1,6 +1,29 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 import { PNG } from 'pngjs';
 import jsQR from 'jsqr';
+
+async function login(page: Page) {
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: /创建你的连接空间|欢迎回来/ })).toBeVisible();
+  if (await page.getByPlaceholder('验证这个空间属于你').isVisible()) {
+    await page.getByPlaceholder('验证这个空间属于你').fill('local-browser-test-secret-not-for-production');
+    await page.getByPlaceholder('至少 8 位，包含字母、数字和符号').fill('BrowserTest123!');
+    await page.getByPlaceholder('再次输入管理密码').fill('BrowserTest123!');
+    await page.getByRole('button', { name: '创建并进入工作台' }).click();
+  } else {
+    await page.getByPlaceholder('输入你的管理密码').fill('BrowserTest123!');
+    await page.getByRole('button', { name: '进入工作台', exact: true }).click();
+  }
+  await expect(page.getByRole('heading', { name: '服务器', exact: false }).first()).toBeVisible();
+  await expect(page.getByRole('button', { name: '刷新服务器' })).toBeEnabled();
+}
+
+async function navigate(page: Page, name: string) {
+  await page
+    .locator('nav')
+    .getByRole('button', { name: new RegExp(name) })
+    .click();
+}
 
 test('admin workflow, player payload, subscriptions and scannable QR on desktop and mobile', async ({
   page,
@@ -27,6 +50,9 @@ test('admin workflow, player payload, subscriptions and scannable QR on desktop 
   await page.getByPlaceholder('例如：家中直连').fill('家中直连');
   await page.getByRole('dialog').getByRole('button', { name: '添加服务器', exact: true }).click();
   await expect(page.locator('.server-title').getByRole('heading', { name: '家庭媒体库' })).toBeVisible();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(page.locator('.toast')).toHaveText('服务器已保存');
+  await expect(page.locator('.toast')).toBeVisible();
   await page.getByRole('button', { name: '导入播放器' }).click();
   const libraURL = await page.getByRole('link', { name: '打开 Libra' }).getAttribute('href');
   const payload = JSON.parse(
@@ -94,6 +120,9 @@ test('admin workflow, player payload, subscriptions and scannable QR on desktop 
     .fill('BrowserFeed123');
   await page.getByRole('button', { name: '创建链接', exact: true }).click();
   await expect(page.locator('.subscription-card')).toHaveCount(1);
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(page.locator('.toast')).toHaveText('订阅链接已保存');
+  await expect(page.locator('.toast')).toBeVisible();
   await page.getByRole('button', { name: '二维码', exact: true }).click();
   const qr = page.getByRole('img', { name: '我的 iPhone 的订阅链接二维码' });
   await expect(qr).toBeVisible();
@@ -102,7 +131,10 @@ test('admin workflow, player payload, subscriptions and scannable QR on desktop 
   const decoded = jsQR(new Uint8ClampedArray(png.data), png.width, png.height);
   expect(decoded?.data).toBe('http://127.0.0.1:8789/BrowserFeed123');
   await page.getByRole('button', { name: '复制链接', exact: true }).click();
-  await expect(page.getByRole('dialog').getByRole('status')).toHaveText('已复制到剪贴板');
+  await expect(page.locator('.toast')).toHaveText('已复制到剪贴板');
+  await expect(page.locator('.toast')).toBeVisible();
+  expect(await page.locator('.toast').evaluate((el) => el.matches(':popover-open'))).toBe(true);
+  expect(await page.locator('.toast').evaluate((el) => el.parentElement === document.body)).toBe(true);
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(decoded!.data);
   await expect(page.locator('.toast')).toBeHidden();
   const feed = await page.request.get(decoded!.data);
@@ -142,4 +174,116 @@ test('admin workflow, player payload, subscriptions and scannable QR on desktop 
   await expect(page.getByRole('heading', { name: '欢迎回来' })).toBeVisible();
   await page.screenshot({ path: 'test-results/login-mobile.png', fullPage: true });
   expect(pageErrors).toEqual([]);
+});
+
+test('deleting a selected server cannot block subscription toggles, and delete toasts stay visible', async ({
+  page,
+}) => {
+  await login(page);
+  await page.getByRole('button', { name: '添加服务器', exact: true }).click();
+  await page.getByPlaceholder('例如：家庭媒体库').fill('删除回归媒体库');
+  await page
+    .getByPlaceholder('https://media.example.com:8920/emby')
+    .fill('https://regression.example.com/emby');
+  await page.getByRole('dialog').getByRole('button', { name: '添加服务器', exact: true }).click();
+  await expect(page.locator('.toast')).toHaveText('服务器已保存');
+  await expect(page.locator('.toast')).toBeVisible();
+  await navigate(page, '订阅链接');
+  await page.getByRole('button', { name: '创建订阅', exact: true }).click();
+  await page.getByRole('dialog').getByLabel('订阅名称').fill('删除回归订阅');
+  await page
+    .getByRole('dialog')
+    .getByLabel(/链接后缀/)
+    .fill('RegressionSelected1234');
+  await page.getByRole('button', { name: '指定服务器', exact: true }).click();
+  await page
+    .getByRole('dialog')
+    .getByRole('checkbox', { name: /删除回归媒体库/ })
+    .check();
+  await page.getByRole('button', { name: '创建链接', exact: true }).click();
+  await expect(page.locator('.toast')).toHaveText('订阅链接已保存');
+  await expect(page.locator('.toast')).toBeVisible();
+  await navigate(page, '服务器');
+  await page.getByRole('button', { name: '删除 删除回归媒体库', exact: true }).click();
+  await page.getByRole('button', { name: '确认删除' }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(page.locator('.toast')).toHaveText('服务器已删除');
+  await expect(page.locator('.toast')).toBeVisible();
+  await navigate(page, '订阅链接');
+  const card = page.locator('.subscription-card').filter({ hasText: '删除回归订阅' });
+  await expect(card).toContainText('0 台指定服务器');
+  await card.getByRole('switch').click();
+  await expect(card.getByRole('switch')).toHaveAttribute('aria-checked', 'false');
+  expect((await page.request.get('/RegressionSelected1234')).status()).toBe(404);
+  await card.getByRole('switch').click();
+  await expect(card.getByRole('switch')).toHaveAttribute('aria-checked', 'true');
+  expect(await (await page.request.get('/RegressionSelected1234')).json()).toEqual([]);
+  await page.reload();
+  await navigate(page, '订阅链接');
+  await card.getByRole('switch').click();
+  await expect(card.getByRole('switch')).toHaveAttribute('aria-checked', 'false');
+  await card.getByRole('button', { name: '删除 删除回归订阅', exact: true }).click();
+  await page.getByRole('button', { name: '确认删除' }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(page.locator('.toast')).toHaveText('订阅已删除');
+  await expect(page.locator('.toast')).toBeVisible();
+});
+
+test('dirty editor protects backdrop, Escape, close and cancel without prompting after a save', async ({
+  page,
+}) => {
+  await login(page);
+  await page.getByRole('button', { name: '添加服务器', exact: true }).click();
+  await page.getByPlaceholder('例如：家庭媒体库').fill('尚未保存的名称');
+  const prompts: string[] = [];
+  const dismiss = async (dialog: import('@playwright/test').Dialog) => {
+    prompts.push(dialog.message());
+    await dialog.dismiss();
+  };
+  page.on('dialog', dismiss);
+  await page.mouse.click(3, 3);
+  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: '关闭', exact: true }).click();
+  await page.getByRole('button', { name: '取消', exact: true }).click();
+  expect(prompts).toEqual(Array(4).fill('有未保存的更改，确定放弃并关闭吗？'));
+  await expect(page.getByPlaceholder('例如：家庭媒体库')).toHaveValue('尚未保存的名称');
+  await page.getByPlaceholder('https://media.example.com:8920/emby').fill('https://unsaved.example.com');
+  await page.getByRole('dialog').getByRole('button', { name: '添加服务器', exact: true }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(page.locator('.toast')).toHaveText('服务器已保存');
+  await expect(page.locator('.toast')).toBeVisible();
+  expect(prompts).toHaveLength(4);
+  page.off('dialog', dismiss);
+  await page.getByRole('button', { name: '编辑 尚未保存的名称', exact: true }).click();
+  await page.getByPlaceholder('例如：家庭媒体库').fill('确定丢弃的内容');
+  page.once('dialog', (dialog) => void dialog.accept());
+  await page.getByRole('button', { name: '取消', exact: true }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: '尚未保存的名称', exact: true })).toBeVisible();
+});
+
+test('HTML error pages, network failures and mismatched secrets produce clear Chinese messages', async ({
+  page,
+}) => {
+  await page.route('**/api/status', (route) =>
+    route.fulfill({ status: 502, contentType: 'text/html', body: '<html>Bad gateway</html>' }),
+  );
+  await page.goto('/');
+  await expect(page.getByRole('alert')).toHaveText('服务返回了无效响应，请稍后重试');
+  await page.unroute('**/api/status');
+  await page.route('**/api/status', (route) => route.abort('failed'));
+  await page.getByRole('button', { name: '重试', exact: true }).click();
+  await expect(page.getByRole('alert')).toHaveText('无法连接到服务，请检查网络后重试');
+  await page.unroute('**/api/status');
+  await page.route('**/api/status', (route) =>
+    route.fulfill({
+      status: 503,
+      json: {
+        code: 'DEPLOYMENT_KEY_MISMATCH',
+        error: '部署密钥与已有数据不匹配，或数据已损坏。请恢复原来的 APP_SECRET 后重新部署。',
+      },
+    }),
+  );
+  await page.getByRole('button', { name: '重试', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('部署密钥与已有数据不匹配');
 });

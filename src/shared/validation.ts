@@ -66,10 +66,10 @@ export function validateConfig(value: unknown): ServerConfig {
     try {
       url = new URL(logo);
     } catch {
-      throw new InputError('Logo 必须是 HTTP(S) 图片地址');
+      throw new InputError('Logo 必须是 HTTPS 图片地址');
     }
-    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || /[\s\\]/u.test(logo))
-      throw new InputError('Logo 地址无效');
+    if (url.protocol !== 'https:' || url.username || url.password || /[\s\\]/u.test(logo))
+      throw new InputError('Logo 必须是 HTTPS 图片地址，且不能包含账号密码或空白');
     config.logo = url.href;
   }
   if (input.credentials !== undefined) {

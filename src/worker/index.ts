@@ -8,8 +8,16 @@ import {
   validatePassword,
   validateSlug,
 } from '../shared/validation';
-import { checkPassword, digest, equal, hashPassword, random, type PasswordHash } from './crypto';
-import { Store } from './storage';
+import {
+  checkPassword,
+  digest,
+  equal,
+  hashPassword,
+  random,
+  StorageDecryptionError,
+  type PasswordHash,
+} from './crypto';
+import { Store, StorageBusyError } from './storage';
 
 interface Admin {
   password: PasswordHash;
@@ -20,7 +28,8 @@ interface Session {
   expires: number;
 }
 const SESSION_SECONDS = 12 * 60 * 60;
-const COOKIE = 'libra_session';
+const cookieName = (request: Request) =>
+  new URL(request.url).protocol === 'https:' ? '__Host-libra_session' : 'libra_session';
 class HttpError extends Error {
   constructor(
     public status: number,
@@ -35,14 +44,14 @@ const json = (value: unknown, status = 200, headers: HeadersInit = {}) =>
     headers: { 'Content-Type': 'application/json; charset=utf-8', ...headers },
   });
 const cookie = (request: Request, value: string, age = SESSION_SECONDS) =>
-  `${COOKIE}=${value}; Path=/; Max-Age=${age}; HttpOnly; SameSite=Strict${new URL(request.url).protocol === 'https:' ? '; Secure' : ''}`;
+  `${cookieName(request)}=${value}; Path=/; Max-Age=${age}; HttpOnly; SameSite=Strict${new URL(request.url).protocol === 'https:' ? '; Secure' : ''}`;
 const sessionToken = (request: Request) =>
   request.headers
     .get('Cookie')
     ?.split(';')
     .map((part) => part.trim())
-    .find((part) => part.startsWith(`${COOKIE}=`))
-    ?.slice(COOKIE.length + 1) ?? '';
+    .find((part) => part.startsWith(`${cookieName(request)}=`))
+    ?.slice(cookieName(request).length + 1) ?? '';
 const configured = (env: Env) => typeof env.APP_SECRET === 'string' && env.APP_SECRET.length >= 32;
 const routeKey = async (slug: string) => `route:${await digest(slug)}`;
 async function readBody(request: Request): Promise<Record<string, unknown>> {
@@ -119,11 +128,11 @@ async function publicFeed(request: Request, env: Env, store: Store, slug: string
   const route = await store.get<{ id: string }>(await routeKey(slug));
   const sub = route ? await store.get<Subscription>(`sub:${route.id}`) : null;
   if (!sub || sub.slug !== slug || !sub.enabled) throw new HttpError(404, '订阅不存在或已停用');
+  const catalog = await store.servers();
+  const byId = new Map(catalog.map((server) => [server.id, server]));
   const servers = sub.allServers
-    ? await store.list<ServerRecord>('server:')
-    : (await Promise.all(sub.serverIds.map((id) => store.get<ServerRecord>(`server:${id}`)))).filter(
-        (item): item is ServerRecord => item !== null,
-      );
+    ? catalog
+    : sub.serverIds.map((id) => byId.get(id)).filter((item): item is ServerRecord => item !== undefined);
   if (sub.allServers) servers.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   return json(servers.filter((server) => server.enabled).map((server) => server.config));
 }
@@ -190,7 +199,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
   if (path === '/api/me' && method === 'GET') return json({ authenticated: true });
   if (path === '/api/dashboard' && method === 'GET') {
     const [servers, subscriptions] = await Promise.all([
-      store.list<ServerRecord>('server:'),
+      store.servers(true),
       store.list<Subscription>('sub:'),
     ]);
     return json({
@@ -217,10 +226,11 @@ async function handle(request: Request, env: Env): Promise<Response> {
     if (!['POST', 'PUT', 'DELETE'].includes(method)) throw new HttpError(405, '不支持此请求方法');
     const input = await readBody(request);
     const id = serverMatch[1];
-    const existing = id ? await store.get<ServerRecord>(`server:${id}`) : null;
+    const servers = await store.servers();
+    const existing = id ? servers.find((server) => server.id === id) : undefined;
     if (id && !existing) throw new HttpError(404, '服务器不存在');
     if (method === 'POST' && !id) {
-      if ((await store.list('server:')).length >= 200) throw new HttpError(400, '最多维护 200 台服务器');
+      if (servers.length >= 200) throw new HttpError(400, '最多维护 200 台服务器');
       const now = new Date().toISOString();
       const record: ServerRecord = {
         id: crypto.randomUUID(),
@@ -230,13 +240,13 @@ async function handle(request: Request, env: Env): Promise<Response> {
         createdAt: now,
         updatedAt: now,
       };
-      await store.put(`server:${record.id}`, record);
+      await store.saveServers([...servers, record]);
       return json(record, 201);
     }
     if (existing && (method === 'PUT' || method === 'DELETE')) {
       version(input.version, existing.version);
       if (method === 'DELETE') {
-        await store.delete(`server:${id}`);
+        await store.saveServers(servers.filter((server) => server.id !== id));
         return json({ ok: true });
       }
       const record: ServerRecord = {
@@ -246,7 +256,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
         version: random(12),
         updatedAt: new Date().toISOString(),
       };
-      await store.put(`server:${id}`, record);
+      await store.saveServers(servers.map((server) => (server.id === id ? record : server)));
       return json(record);
     }
     throw new HttpError(405, '不支持此请求方法');
@@ -265,11 +275,11 @@ async function handle(request: Request, env: Env): Promise<Response> {
       return json({ ok: true });
     }
     if ((id && method !== 'PUT') || (!id && method !== 'POST')) throw new HttpError(405, '不支持此请求方法');
-    if (!existing && (await store.list('sub:')).length >= 50) throw new InputError('最多创建 50 条订阅链接');
+    if (!existing && (await store.count('sub:')) >= 50) throw new InputError('最多创建 50 条订阅链接');
     const slug = input.slug === undefined ? (existing?.slug ?? random(16)) : validateSlug(input.slug);
     const name = text(input.name ?? existing?.name, '订阅名称', 100, true)!;
     const allServers = flag(input.allServers, existing?.allServers ?? true);
-    const rawIds = input.serverIds ?? existing?.serverIds ?? [];
+    const rawIds = input.serverIds === undefined ? (existing?.serverIds ?? []) : input.serverIds;
     if (
       !Array.isArray(rawIds) ||
       rawIds.length > 200 ||
@@ -277,12 +287,15 @@ async function handle(request: Request, env: Env): Promise<Response> {
     )
       throw new InputError('服务器选择无效');
     const serverIds = allServers ? [] : [...new Set(rawIds as string[])];
-    if (!allServers && !serverIds.length) throw new InputError('请至少选择一台服务器');
-    if (
-      serverIds.length &&
-      (await Promise.all(serverIds.map((serverId) => store.get(`server:${serverId}`)))).some((row) => !row)
-    )
-      throw new InputError('选择的服务器已被删除，请刷新后重试');
+    // Partial updates, especially emergency disable/rotation, must still work
+    // when an existing selection contains servers deleted since creation.
+    const selectionChanged = !existing || input.serverIds !== undefined || allServers !== existing.allServers;
+    if (selectionChanged && !allServers) {
+      if (!serverIds.length) throw new InputError('请至少选择一台服务器');
+      const available = new Set((await store.servers()).map((server) => server.id));
+      if (!serverIds.every((id) => available.has(id)))
+        throw new InputError('选择的服务器已被删除，请刷新后重试');
+    }
     const route = await routeKey(slug);
     if (slug !== existing?.slug) {
       const occupied = await store.get<{ id: string }>(route);
@@ -308,20 +321,72 @@ async function handle(request: Request, env: Env): Promise<Response> {
   }
   throw new HttpError(404, '接口不存在');
 }
+function routeCategory(path: string): string {
+  for (const category of ['auth', 'servers', 'subscriptions'])
+    if (path === `/api/${category}` || path.startsWith(`/api/${category}/`)) return category;
+  if (path === '/api/status') return 'status';
+  if (path === '/api/dashboard') return 'dashboard';
+  if (path.startsWith('/api/')) return 'other_api';
+  if (path.startsWith('/assets/')) return 'asset';
+  return /^\/[A-Za-z0-9]{8,64}$/.test(path) ? 'public_feed' : 'page';
+}
+function safeErrorName(error: unknown): string {
+  const names = [
+    'Error',
+    'TypeError',
+    'RangeError',
+    'SyntaxError',
+    'OperationError',
+    'StorageFormatError',
+    'StorageDecryptionError',
+  ];
+  return error instanceof Error && names.includes(error.name) ? error.name : 'UnknownError';
+}
 export default {
-  async fetch(request, env): Promise<Response> {
+  async fetch(request: Request, env: Env): Promise<Response> {
     let response: Response;
     try {
       response = await handle(request, env);
     } catch (error) {
-      const status = error instanceof HttpError ? error.status : error instanceof InputError ? 400 : 500;
-      // Deliberately omit URLs, request bodies, and exception messages: all may contain credentials.
-      if (status === 500) console.error(JSON.stringify({ event: 'request_failed', status: 500 }));
+      const mismatch = error instanceof StorageDecryptionError;
+      const busy = error instanceof StorageBusyError;
+      const status =
+        error instanceof HttpError
+          ? error.status
+          : error instanceof InputError
+            ? 400
+            : mismatch
+              ? 503
+              : busy
+                ? 429
+                : 500;
+      // Only fixed categories: URLs/slugs, bodies and exception messages may
+      // contain credentials and must never be attached here.
+      if (status >= 500)
+        console.error(
+          JSON.stringify({
+            event: 'request_failed',
+            status,
+            name: safeErrorName(error),
+            route: routeCategory(new URL(request.url).pathname),
+          }),
+        );
       response = json(
-        { error: status === 500 ? '服务暂时不可用，请稍后重试或检查部署配置' : (error as Error).message },
+        mismatch
+          ? {
+              code: 'DEPLOYMENT_KEY_MISMATCH',
+              error: '部署密钥与已有数据不匹配，或数据已损坏。请恢复原来的 APP_SECRET 后重新部署。',
+            }
+          : {
+              error: busy
+                ? '保存过于频繁，请稍等一秒后重试'
+                : status === 500
+                  ? '服务暂时不可用，请稍后重试或检查部署配置'
+                  : (error as Error).message,
+            },
         status,
       );
-      if (status === 429) response.headers.set('Retry-After', '60');
+      if (status === 429) response.headers.set('Retry-After', busy ? '1' : '60');
     }
     const headers = new Headers(response.headers);
     const path = new URL(request.url).pathname;
@@ -333,11 +398,11 @@ export default {
     headers.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
     headers.set(
       'Content-Security-Policy',
-      "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' https: http: data:; connect-src 'self'; font-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'",
+      "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' https: data:; connect-src 'self'; font-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'",
     );
     if (new URL(request.url).protocol === 'https:')
       headers.set('Strict-Transport-Security', 'max-age=31536000');
-    if (/^\/[A-Za-z0-9]{8,64}$/.test(path) && !['/favicon', '/robots'].includes(path)) {
+    if (/^\/[A-Za-z0-9]{8,64}$/.test(path)) {
       headers.set('Access-Control-Allow-Origin', '*');
       headers.set('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
       headers.set('Access-Control-Allow-Headers', 'Content-Type');
