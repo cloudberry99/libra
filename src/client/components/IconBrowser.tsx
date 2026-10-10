@@ -89,6 +89,7 @@ export function IconBrowser({
   }, [sources, reload]);
   const pendingCount = scoped.filter((library) => !results[libraryKey(library)]).length;
   const failed = scoped.filter((library) => results[libraryKey(library)]?.error);
+  const failureMessages = new Set(failed.map((library) => results[libraryKey(library)]?.error));
   const icons = useMemo(() => {
     const seen = new Set<string>();
     const combined = scoped.flatMap((library) =>
@@ -154,6 +155,7 @@ export function IconBrowser({
           {scoped.length === 1
             ? results[libraryKey(failed[0])].error
             : `${failed.length} 个图库加载失败：${failed.map((library) => library.name).join('、')}`}{' '}
+          {scoped.length > 1 && failureMessages.size === 1 && <span>（{[...failureMessages][0]}）</span>}
           <button
             type="button"
             className="text-button"

@@ -392,6 +392,7 @@ test('Logo picker searches across libraries, isolates failures, paginates and pr
   await page.getByRole('button', { name: '从图库选择', exact: true }).click();
   await expect(page.getByLabel('选择图标库')).toHaveValue('all');
   await expect(page.getByRole('alert')).toContainText('1 个图库加载失败');
+  await expect(page.getByRole('alert')).toContainText('图标库暂时无法访问');
   await expect(page.locator('.icon-choice')).toHaveCount(60);
   await page.getByRole('button', { name: '重试', exact: true }).click();
   await expect(page.getByRole('alert')).toHaveCount(0);
