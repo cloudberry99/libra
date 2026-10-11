@@ -24,7 +24,7 @@ export function Button({
   busy = false,
   className = '',
   ...props
-}: React.ButtonHTMLAttributes<HTMLButtonElement> & {
+}: React.ComponentPropsWithRef<'button'> & {
   variant?: 'primary' | 'secondary' | 'ghost' | 'danger';
   busy?: boolean;
 }) {

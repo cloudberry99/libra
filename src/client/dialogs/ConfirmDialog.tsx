@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react';
+import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { Trash2 } from 'lucide-react';
 import { Button, Message } from '../components/ui';
 import { Modal } from '../components/Modal';
@@ -9,6 +9,7 @@ export function ConfirmDialog({
   description,
   close,
   confirm,
+  cancelLabel = '取消',
   confirmLabel = '确认删除',
   confirmVariant = 'danger',
   confirmIcon = <Trash2 size={16} />,
@@ -17,12 +18,18 @@ export function ConfirmDialog({
   description: string;
   close: () => void;
   confirm: () => Promise<void>;
+  cancelLabel?: string;
   confirmLabel?: string;
   confirmVariant?: 'primary' | 'danger';
   confirmIcon?: ReactNode;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const cancelButton = useRef<HTMLButtonElement>(null);
+  useLayoutEffect(() => {
+    // Focus the safe action after Modal has opened its dialog.
+    cancelButton.current?.focus();
+  }, []);
   return (
     <Modal
       title={title}
@@ -35,8 +42,8 @@ export function ConfirmDialog({
         {error && <Message tone="error">{error}</Message>}
       </div>
       <div className="modal-footer">
-        <Button type="button" variant="secondary" onClick={close} disabled={busy}>
-          取消
+        <Button ref={cancelButton} type="button" variant="secondary" onClick={close} disabled={busy}>
+          {cancelLabel}
         </Button>
         <Button
           type="button"

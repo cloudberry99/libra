@@ -15,7 +15,7 @@ export function GitHubSettings({ close, notify }: { close: () => void; notify: (
   const [error, setError] = useState('');
   const [reload, setReload] = useState(0);
   const [confirmRemoval, setConfirmRemoval] = useState(false);
-  const requestClose = useEditorClose({ token }, close, busy);
+  const { requestClose, confirmation } = useEditorClose({ token }, close, busy);
   useEffect(() => {
     let active = true;
     setError('');
@@ -113,6 +113,7 @@ export function GitHubSettings({ close, notify }: { close: () => void; notify: (
           </div>
         </form>
       </Modal>
+      {confirmation}
       {confirmRemoval && (
         <ConfirmDialog
           title="移除 GitHub Token？"

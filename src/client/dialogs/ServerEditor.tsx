@@ -50,7 +50,7 @@ export function ServerEditor({
     setDiscoveryMessage('');
     setDiscoveryError('');
   }, [primary.url, username, password]);
-  const requestClose = useEditorClose(
+  const { requestClose, confirmation } = useEditorClose(
     { name, note, logo, username, password, primary, alternates, enabled },
     close,
     working,
@@ -310,6 +310,7 @@ export function ServerEditor({
           </fieldset>
         </form>
       </Modal>
+      {confirmation}
       {confirmHTTP && (
         <ConfirmDialog
           title="通过 HTTP 获取线路？"

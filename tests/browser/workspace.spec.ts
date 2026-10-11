@@ -655,7 +655,7 @@ test('deleting a selected server cannot block subscription toggles, and delete t
   await expect(page.locator('.toast')).toBeVisible();
 });
 
-test('dirty editor protects backdrop, Escape, close and cancel without prompting after a save', async ({
+test('dirty editor uses styled confirmation for every close action and keeps drafts until discarded', async ({
   page,
 }) => {
   await login(page);
@@ -667,25 +667,123 @@ test('dirty editor protects backdrop, Escape, close and cancel without prompting
     await dialog.dismiss();
   };
   page.on('dialog', dismiss);
-  await page.mouse.click(3, 3);
-  await page.keyboard.press('Escape');
-  await page.getByRole('button', { name: '关闭', exact: true }).click();
-  await page.getByRole('button', { name: '取消', exact: true }).click();
-  expect(prompts).toEqual(Array(4).fill('有未保存的更改，确定放弃并关闭吗？'));
-  await expect(page.getByPlaceholder('例如：家庭媒体库')).toHaveValue('尚未保存的名称');
+  const editor = page.getByRole('dialog', { name: '添加服务器', exact: true });
+  const confirmation = page.getByRole('dialog', { name: '放弃未保存的更改？', exact: true });
+  for (const [requestClose, continueEditing] of [
+    [() => page.mouse.click(3, 3), () => confirmation.getByRole('button', { name: '继续编辑' }).click()],
+    [() => page.keyboard.press('Escape'), () => page.keyboard.press('Escape')],
+    [
+      () => editor.getByRole('button', { name: '关闭', exact: true }).click(),
+      () => confirmation.getByRole('button', { name: '关闭', exact: true }).click(),
+    ],
+    [() => editor.getByRole('button', { name: '取消', exact: true }).click(), () => page.mouse.click(3, 3)],
+  ]) {
+    await requestClose();
+    await expect(confirmation).toBeVisible();
+    await expect(page.locator('dialog[open]')).toHaveCount(2);
+    await expect(confirmation.getByRole('button', { name: '继续编辑' })).toBeFocused();
+    await expect(confirmation.getByRole('button', { name: '放弃更改' })).toHaveClass(/danger/);
+    await continueEditing();
+    await expect(confirmation).toHaveCount(0);
+    await expect(editor).toBeVisible();
+    await expect(page.locator('body')).toHaveClass(/modal-open/);
+    await expect(page.getByPlaceholder('例如：家庭媒体库')).toHaveValue('尚未保存的名称');
+  }
+  await editor.getByRole('button', { name: '取消', exact: true }).click();
+  await page.screenshot({ path: 'test-results/unsaved-changes-desktop.png', fullPage: true });
+  await page.keyboard.press('Enter');
+  await expect(confirmation).toHaveCount(0);
+  await expect(editor.getByRole('button', { name: '取消', exact: true })).toBeFocused();
   await page.getByPlaceholder('https://media.example.com:8920/emby').fill('https://unsaved.example.com');
   await page.getByRole('dialog').getByRole('button', { name: '添加服务器', exact: true }).click();
   await expect(page.getByRole('dialog')).toHaveCount(0);
   await expect(page.locator('.toast')).toHaveText('服务器已保存');
   await expect(page.locator('.toast')).toBeVisible();
-  expect(prompts).toHaveLength(4);
-  page.off('dialog', dismiss);
   await page.getByRole('button', { name: '编辑 尚未保存的名称', exact: true }).click();
   await page.getByPlaceholder('例如：家庭媒体库').fill('确定丢弃的内容');
-  page.once('dialog', (dialog) => void dialog.accept());
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByRole('button', { name: '取消', exact: true }).click();
+  await expect(confirmation).toBeVisible();
+  expect(await confirmation.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+  await page.screenshot({ path: 'test-results/unsaved-changes-mobile.png', fullPage: true });
+  await confirmation.getByRole('button', { name: '放弃更改', exact: true }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(page.locator('body')).not.toHaveClass(/modal-open/);
+  await expect(page.getByRole('heading', { name: '尚未保存的名称', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '编辑 尚未保存的名称', exact: true }).click();
+  await expect(page.getByPlaceholder('例如：家庭媒体库')).toHaveValue('尚未保存的名称');
+  await page.getByPlaceholder('例如：家庭媒体库').fill('临时改动');
+  await page.getByPlaceholder('例如：家庭媒体库').fill('尚未保存的名称');
   await page.getByRole('button', { name: '取消', exact: true }).click();
   await expect(page.getByRole('dialog')).toHaveCount(0);
-  await expect(page.getByRole('heading', { name: '尚未保存的名称', exact: true })).toBeVisible();
+  expect(prompts).toEqual([]);
+  page.off('dialog', dismiss);
+});
+
+test('subscription, JSON, icon library and token drafts share the styled discard confirmation', async ({
+  page,
+}) => {
+  await login(page);
+  const nativePrompts: string[] = [];
+  page.on('dialog', async (dialog) => {
+    nativePrompts.push(dialog.message());
+    await dialog.dismiss();
+  });
+  const writes: string[] = [];
+  page.on('request', (request) => {
+    if (
+      ['POST', 'PUT', 'DELETE'].includes(request.method()) &&
+      new URL(request.url()).pathname.startsWith('/api/')
+    )
+      writes.push(request.url());
+  });
+  const confirmation = page.getByRole('dialog', { name: '放弃未保存的更改？', exact: true });
+  for (const scenario of [
+    {
+      section: '服务器',
+      trigger: '从 JSON 添加',
+      title: '从 JSON 添加',
+      field: () => page.getByLabel('服务器配置'),
+      value: '{"type":"emby"}',
+    },
+    {
+      section: '订阅链接',
+      trigger: '创建订阅',
+      title: '创建订阅链接',
+      field: () => page.getByLabel('订阅名称'),
+      value: '未保存的订阅',
+    },
+    {
+      section: '图标库',
+      trigger: '添加图标库',
+      title: '添加图标库',
+      field: () => page.getByLabel('图标库名称', { exact: true }),
+      value: '未保存的图标库',
+    },
+    {
+      section: '图标库',
+      trigger: 'GitHub Token',
+      title: 'GitHub Token',
+      field: () => page.getByPlaceholder('粘贴 GitHub Personal Access Token'),
+      value: 'fictional-unsaved-token',
+    },
+  ]) {
+    await navigate(page, scenario.section);
+    await page.getByRole('button', { name: scenario.trigger, exact: true }).click();
+    const editor = page.getByRole('dialog', { name: scenario.title, exact: true });
+    await scenario.field().fill(scenario.value);
+    await editor.getByRole('button', { name: '取消', exact: true }).click();
+    await expect(confirmation).toBeVisible();
+    await confirmation.getByRole('button', { name: '继续编辑', exact: true }).click();
+    await expect(scenario.field()).toHaveValue(scenario.value);
+    await expect(editor.getByRole('button', { name: '取消', exact: true })).toBeFocused();
+    await editor.getByRole('button', { name: '取消', exact: true }).click();
+    await confirmation.getByRole('button', { name: '放弃更改', exact: true }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await expect(page.locator('body')).not.toHaveClass(/modal-open/);
+  }
+  expect(writes).toEqual([]);
+  expect(nativePrompts).toEqual([]);
 });
 
 test('HTML error pages, network failures and mismatched secrets produce clear Chinese messages', async ({

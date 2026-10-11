@@ -20,7 +20,7 @@ export function JsonImport({
   const [value, setValue] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const requestClose = useEditorClose(value, close, busy);
+  const { requestClose, confirmation } = useEditorClose(value, close, busy);
   async function submit(event: FormEvent) {
     event.preventDefault();
     if (busy) return;
@@ -46,48 +46,51 @@ export function JsonImport({
     }
   }
   return (
-    <Modal
-      title="从 JSON 添加"
-      subtitle="支持单个配置对象或订阅数组，全部校验通过后一次性导入。"
-      close={requestClose}
-    >
-      <form onSubmit={submit}>
-        <div className="modal-body">
-          <Field label="服务器配置">
-            <textarea
-              className="code-input"
-              rows={13}
-              value={value}
-              onChange={(event) => {
-                setValue(event.target.value);
-                setError('');
-              }}
-              disabled={busy}
-              autoFocus
-              spellCheck={false}
-              placeholder={
-                '[\n  {\n    "type": "emby",\n    "name": "家庭媒体库",\n    "primary": { "url": "https://media.example.com" }\n  },\n  {\n    "type": "emby",\n    "name": "另一台服务器",\n    "primary": { "url": "https://other.example.com" }\n  }\n]'
-              }
-              required
-              maxLength={MAX_SERVER_IMPORT_BYTES}
-            />
-          </Field>
-          {error && (
-            <Message tone="error">
-              <span className="json-import-error">{error}</span>
-            </Message>
-          )}
-        </div>
-        <div className="modal-footer">
-          <Button variant="secondary" type="button" onClick={requestClose} disabled={busy}>
-            取消
-          </Button>
-          <Button type="submit" busy={busy}>
-            <Plus size={16} />
-            校验并导入
-          </Button>
-        </div>
-      </form>
-    </Modal>
+    <>
+      <Modal
+        title="从 JSON 添加"
+        subtitle="支持单个配置对象或订阅数组，全部校验通过后一次性导入。"
+        close={requestClose}
+      >
+        <form onSubmit={submit}>
+          <div className="modal-body">
+            <Field label="服务器配置">
+              <textarea
+                className="code-input"
+                rows={13}
+                value={value}
+                onChange={(event) => {
+                  setValue(event.target.value);
+                  setError('');
+                }}
+                disabled={busy}
+                autoFocus
+                spellCheck={false}
+                placeholder={
+                  '[\n  {\n    "type": "emby",\n    "name": "家庭媒体库",\n    "primary": { "url": "https://media.example.com" }\n  },\n  {\n    "type": "emby",\n    "name": "另一台服务器",\n    "primary": { "url": "https://other.example.com" }\n  }\n]'
+                }
+                required
+                maxLength={MAX_SERVER_IMPORT_BYTES}
+              />
+            </Field>
+            {error && (
+              <Message tone="error">
+                <span className="json-import-error">{error}</span>
+              </Message>
+            )}
+          </div>
+          <div className="modal-footer">
+            <Button variant="secondary" type="button" onClick={requestClose} disabled={busy}>
+              取消
+            </Button>
+            <Button type="submit" busy={busy}>
+              <Plus size={16} />
+              校验并导入
+            </Button>
+          </div>
+        </form>
+      </Modal>
+      {confirmation}
+    </>
   );
 }
