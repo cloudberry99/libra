@@ -136,7 +136,7 @@ test('counts never fetch/decrypt values, and list uses batches of at most 100 wi
   assert.equal(new Set(rows.map((row) => row.key)).size, 205);
 });
 
-test('public feeds use exactly three KV reads for 200 servers and retain selected-server order', async () => {
+test('public feeds use exactly three KV reads for 200 servers and selected feeds follow catalog order', async () => {
   const { env, values, reads, lists } = memoryStorage();
   const store = new Store(env);
   const servers = Array.from({ length: 200 }, (_, i) => ({
@@ -166,7 +166,7 @@ test('public feeds use exactly three KV reads for 200 servers and retain selecte
   const selected = await app.fetch(new Request(`https://libra.test/${slug}`), env);
   assert.deepEqual(
     ((await selected.json()) as { name: string }[]).map((row) => row.name),
-    ['Server 199', 'Server 1'],
+    ['Server 1', 'Server 199'],
   );
   assert.equal(reads.flat().length, 3);
 });

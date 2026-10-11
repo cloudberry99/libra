@@ -1,20 +1,14 @@
 import { useState } from 'react';
 import {
   ArrowDownToLine,
-  ArrowUpRight,
-  Globe2,
   Grid2X2,
   Link2,
   List,
-  Network,
-  Pencil,
   Plus,
   RefreshCw,
   Search,
   Server,
   ShieldCheck,
-  Trash2,
-  UserRound,
   Waypoints,
   X,
 } from 'lucide-react';
@@ -22,6 +16,9 @@ import type { DashboardData, ServerRecord } from '../../shared/types';
 import { Spinner, Button, IconButton, Empty } from '../components/ui';
 import { titleOf } from '../helpers';
 import type { DialogState } from '../types';
+import { ServerSort } from '../components/ServerSort';
+import { SortableServerCard } from '../components/SortableServerCard';
+import { mergeVisibleOrder } from '../../shared/server-order';
 
 export function ServersPage({
   data,
@@ -30,6 +27,8 @@ export function ServersPage({
   setDialog,
   toggleServer,
   busyId,
+  sorting,
+  reorderServers,
 }: {
   data: DashboardData;
   loading: boolean;
@@ -37,6 +36,8 @@ export function ServersPage({
   setDialog: (value: DialogState) => void;
   toggleServer: (server: ServerRecord) => Promise<void>;
   busyId: string;
+  sorting: boolean;
+  reorderServers: (serverIds: string[]) => Promise<void>;
 }) {
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState('all');
@@ -91,7 +92,11 @@ export function ServersPage({
         <h2>
           我的服务器 <span>{data.servers.length}</span>
         </h2>
-        <button className="text-button muted-text" onClick={() => setDialog({ kind: 'json' })}>
+        <button
+          className="text-button muted-text"
+          disabled={sorting}
+          onClick={() => setDialog({ kind: 'json' })}
+        >
           <ArrowDownToLine size={15} />从 JSON 添加
         </button>
       </div>
@@ -130,7 +135,7 @@ export function ServersPage({
               <List size={18} />
             </IconButton>
           </div>
-          <IconButton label="刷新服务器" disabled={loading} onClick={() => void load()}>
+          <IconButton label="刷新服务器" disabled={loading || sorting} onClick={() => void load()}>
             <RefreshCw size={17} className={loading ? 'spin' : ''} />
           </IconButton>
         </div>
@@ -141,68 +146,32 @@ export function ServersPage({
           正在整理你的连接…
         </div>
       ) : shown.length ? (
-        <div className={`server-grid ${layout === 'list' ? 'list-layout' : ''}`}>
-          {shown.map((server, index) => (
-            <article className={`server-card ${!server.enabled ? 'disabled-card' : ''}`} key={server.id}>
-              <div className="server-card-top">
-                <ServerArt server={server} index={index} />
-                <div className="server-title">
-                  <h3 title={titleOf(server)}>{titleOf(server)}</h3>
-                  {server.config.note && <span>{server.config.note}</span>}
-                </div>
-                <IconButton
-                  label={`编辑 ${titleOf(server)}`}
-                  onClick={() => setDialog({ kind: 'server', server })}
-                >
-                  <Pencil size={16} />
-                </IconButton>
-              </div>
-              <div className="server-details">
-                <div>
-                  <Globe2 size={15} />
-                  <span title={server.config.primary.url}>
-                    {server.config.primary.url.replace(/^https?:\/\//, '')}
-                  </span>
-                </div>
-                <div>
-                  <UserRound size={15} />
-                  <span>{server.config.credentials?.username || '未填写账号'}</span>
-                  <span className="route-count">
-                    <Network size={13} />
-                    {1 + (server.config.alternates?.length ?? 0)} 条线路
-                  </span>
-                </div>
-              </div>
-              <div className="server-card-footer">
-                <button
-                  className={`status-button ${server.enabled ? 'enabled' : ''}`}
-                  disabled={!!busyId}
-                  onClick={() => void toggleServer(server)}
-                  title={server.enabled ? '点击停用订阅中的配置' : '点击启用配置'}
-                >
-                  <span />
-                  {busyId === server.id ? '保存中' : server.enabled ? '已启用' : '已停用'}
-                </button>
-                <div>
-                  <button
-                    type="button"
-                    className="server-delete-button"
-                    aria-label={`删除 ${titleOf(server)}`}
-                    disabled={!!busyId}
-                    onClick={() => setDialog({ kind: 'deleteServer', server })}
-                  >
-                    <Trash2 size={15} />
-                    删除
-                  </button>
-                  <button className="import-button" onClick={() => setDialog({ kind: 'import', server })}>
-                    导入播放器
-                    <ArrowUpRight size={15} />
-                  </button>
-                </div>
-              </div>
-            </article>
-          ))}
-        </div>
+        <ServerSort
+          servers={shown}
+          save={(ids) =>
+            void reorderServers(
+              mergeVisibleOrder(
+                data.servers.map((server) => server.id),
+                ids,
+              ),
+            )
+          }
+        >
+          <div className={`server-grid ${layout === 'list' ? 'list-layout' : ''}`} aria-busy={sorting}>
+            {shown.map((server, index) => (
+              <SortableServerCard
+                key={server.id}
+                server={server}
+                index={index}
+                busyId={busyId}
+                locked={sorting || !!busyId}
+                sortable={shown.length > 1}
+                setDialog={setDialog}
+                toggleServer={toggleServer}
+              />
+            ))}
+          </div>
+        </ServerSort>
       ) : (
         <Empty
           icon={<Server size={30} />}
@@ -226,23 +195,5 @@ export function ServersPage({
         <span>连接信息加密保存。启用状态表示纳入订阅，不代表服务器连通性。</span>
       </div>
     </>
-  );
-}
-function ServerArt({ server, index }: { server: ServerRecord; index: number }) {
-  const [failed, setFailed] = useState(false);
-  return (
-    <span className={`server-art art-${index % 4}`}>
-      {server.config.logo && /^https:\/\//i.test(server.config.logo) && !failed ? (
-        <img
-          src={server.config.logo}
-          alt=""
-          referrerPolicy="no-referrer"
-          loading="lazy"
-          onError={() => setFailed(true)}
-        />
-      ) : (
-        <Server size={25} />
-      )}
-    </span>
   );
 }

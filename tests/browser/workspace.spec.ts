@@ -1042,3 +1042,196 @@ test('a rejected JSON batch keeps the draft for correction without partially add
   await expect(page.locator('.toast')).toHaveText('已导入 1 台服务器');
   await expect(page.locator('.server-card')).toHaveCount(initial.servers.length + 1);
 });
+
+async function sortingFixture(page: Page, prefix: string) {
+  await login(page);
+  const before: DashboardData = await (await page.request.get('/api/dashboard')).json();
+  const response = await page.request.post('/api/servers/import', {
+    headers: { Origin: 'http://127.0.0.1:8789', 'X-Libra-Request': '1' },
+    data: {
+      catalogRevision: before.revisions.servers,
+      configs: ['甲', '乙', '丙'].map((suffix, index) => ({
+        type: 'emby',
+        name: `${prefix}${suffix}`,
+        primary: { url: `https://sort-${index}.example.com` },
+      })),
+    },
+  });
+  expect(response.status()).toBe(201);
+  const data: DashboardData = await (await page.request.get('/api/dashboard')).json();
+  await page.getByRole('button', { name: '刷新服务器', exact: true }).click();
+  await expect(page.locator('.server-card')).toHaveCount(data.servers.length);
+  await page.getByLabel('搜索服务器').fill(prefix);
+  await expect(page.locator('.server-card')).toHaveCount(3);
+  return { data, records: data.servers.filter((server) => server.config.name?.startsWith(prefix)) };
+}
+
+async function dragServer(page: Page, from: string, to: string) {
+  const source = page.getByRole('button', { name: `拖动排序 ${from}`, exact: true });
+  const target = page.getByRole('button', { name: `拖动排序 ${to}`, exact: true });
+  await source.scrollIntoViewIfNeeded();
+  const a = (await source.boundingBox())!;
+  const b = (await target.boundingBox())!;
+  await page.mouse.move(a.x + a.width / 2, a.y + a.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(a.x + a.width / 2 + 10, a.y + a.height / 2);
+  await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2, { steps: 12 });
+  await page.mouse.up();
+}
+
+test('mouse and keyboard sorting persists through refresh and orders all and selected subscription responses', async ({
+  page,
+}) => {
+  const { data, records } = await sortingFixture(page, '排序回归');
+  const [a, b, c] = records;
+  for (const [slug, allServers] of [
+    ['OrderBrowserAll1234', true],
+    ['OrderBrowserSelected1234', false],
+  ] as const) {
+    const result = await page.request.post('/api/subscriptions', {
+      headers: { Origin: 'http://127.0.0.1:8789', 'X-Libra-Request': '1' },
+      data: { name: slug, slug, allServers, serverIds: records.map((record) => record.id).reverse() },
+    });
+    expect(result.status()).toBe(201);
+  }
+  const errors: string[] = [];
+  const orderRequests: string[][] = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  page.on('request', (request) => {
+    if (request.method() === 'PUT' && new URL(request.url()).pathname === '/api/servers/order')
+      orderRequests.push(request.postDataJSON().serverIds);
+  });
+  await dragServer(page, c.config.name!, a.config.name!);
+  await expect(page.locator('.toast')).toHaveText('排序已保存');
+  await expect(page.locator('.server-title h3')).toHaveText([c.config.name!, a.config.name!, b.config.name!]);
+  const expected = [...data.servers.filter((row) => !records.some((item) => item.id === row.id)), c, a, b];
+  expect(orderRequests).toEqual([expected.map((row) => row.id)]);
+  let after: DashboardData = await (await page.request.get('/api/dashboard')).json();
+  expect(after.servers).toEqual(expected);
+  expect(after.revisions.servers).not.toBe(data.revisions.servers);
+  expect(await (await page.request.get('/OrderBrowserAll1234')).json()).toEqual(
+    expected.filter((row) => row.enabled).map((row) => row.config),
+  );
+  expect(await (await page.request.get('/OrderBrowserSelected1234')).json()).toEqual([
+    c.config,
+    a.config,
+    b.config,
+  ]);
+  await page.reload();
+  await expect(page.locator('.server-title h3')).toHaveText(expected.map((row) => row.config.name!));
+  await page.getByLabel('搜索服务器').fill('排序回归');
+  await page.getByRole('button', { name: '列表视图', exact: true }).click();
+  const handle = page.getByRole('button', { name: `拖动排序 ${c.config.name}`, exact: true });
+  await handle.focus();
+  // Hold the activation key through a browser tick: the keyboard sensor
+  // attaches its document listeners after the initiating keydown.
+  await page.keyboard.press('Space', { delay: 50 });
+  await expect(page.locator('.server-drag-preview')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.locator('.server-drag-preview')).toHaveCount(0);
+  expect(orderRequests).toHaveLength(1);
+  await expect(page.locator('.server-title h3')).toHaveText([c.config.name!, a.config.name!, b.config.name!]);
+  await handle.focus();
+  await page.keyboard.press('Space', { delay: 50 });
+  await page.keyboard.press('ArrowDown', { delay: 50 });
+  await page.keyboard.press('Space');
+  await expect(page.locator('.server-title h3')).toHaveText([a.config.name!, c.config.name!, b.config.name!]);
+  await expect(page.locator('.server-grid')).toHaveAttribute('aria-busy', 'false');
+  expect(orderRequests).toHaveLength(2);
+  after = await (await page.request.get('/api/dashboard')).json();
+  expect(after.servers.slice(-3)).toEqual([a, c, b]);
+  expect(await (await page.request.get('/OrderBrowserSelected1234')).json()).toEqual([
+    a.config,
+    c.config,
+    b.config,
+  ]);
+  await page.screenshot({ path: 'test-results/server-order-list.png', fullPage: true });
+  expect(errors).toEqual([]);
+});
+
+test('sorting locks writes while saving and restores the original order after a conflict', async ({
+  page,
+}) => {
+  const {
+    data,
+    records: [a, b, c],
+  } = await sortingFixture(page, '排序冲突');
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route('**/api/servers/order', async (route) => {
+    await pending;
+    await route.fulfill({ status: 409, json: { error: '服务器目录已更新，请刷新后重试' } });
+  });
+  await dragServer(page, c.config.name!, a.config.name!);
+  try {
+    await expect(page.locator('.server-grid')).toHaveAttribute('aria-busy', 'true');
+    await expect(page.getByRole('button', { name: '刷新服务器', exact: true })).toBeDisabled();
+    await expect(page.getByRole('button', { name: '添加服务器', exact: true })).toBeDisabled();
+    await expect(page.getByRole('button', { name: '从 JSON 添加', exact: true })).toBeDisabled();
+    await expect(page.getByRole('button', { name: `拖动排序 ${a.config.name}`, exact: true })).toBeDisabled();
+    await expect(page.getByRole('button', { name: `删除 ${a.config.name}`, exact: true })).toBeDisabled();
+    await expect(page.getByRole('button', { name: `编辑 ${a.config.name}`, exact: true })).toBeDisabled();
+  } finally {
+    release();
+  }
+  await expect(page.locator('.toast')).toContainText('排序未保存：服务器目录已更新');
+  await expect(page.locator('.server-title h3')).toHaveText([a.config.name!, b.config.name!, c.config.name!]);
+  expect(((await (await page.request.get('/api/dashboard')).json()) as DashboardData).servers).toEqual(
+    data.servers,
+  );
+  await page.unroute('**/api/servers/order');
+  await dragServer(page, c.config.name!, a.config.name!);
+  await expect(page.locator('.toast')).toHaveText('排序已保存');
+  await expect(page.locator('.server-title h3')).toHaveText([c.config.name!, a.config.name!, b.config.name!]);
+});
+
+test('touch dragging works on mobile without changing hidden servers or overflowing the page', async ({
+  page,
+}) => {
+  const {
+    data,
+    records: [a, b, c],
+  } = await sortingFixture(page, '触屏排序');
+  await page.setViewportSize({ width: 390, height: 844 });
+  const devtools = await page.context().newCDPSession(page);
+  await devtools.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
+  const source = page.getByRole('button', { name: `拖动排序 ${a.config.name}`, exact: true });
+  const target = page.getByRole('button', { name: `拖动排序 ${b.config.name}`, exact: true });
+  await source.scrollIntoViewIfNeeded();
+  const start = (await source.boundingBox())!;
+  const end = (await target.boundingBox())!;
+  const x = start.x + start.width / 2,
+    y = start.y + start.height / 2;
+  await devtools.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y, id: 1 }] });
+  for (let step = 1; step <= 10; step++) {
+    await devtools.send('Input.dispatchTouchEvent', {
+      type: 'touchMove',
+      touchPoints: [
+        {
+          x: x + ((end.x + end.width / 2 - x) * step) / 10,
+          y: y + ((end.y + end.height / 2 - y) * step) / 10,
+          id: 1,
+        },
+      ],
+    });
+  }
+  await expect(page.locator('.server-drag-preview')).toBeVisible();
+  await page.screenshot({ path: 'test-results/server-order-touch-drag.png', fullPage: false });
+  await devtools.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  await expect(page.locator('.toast')).toHaveText('排序已保存');
+  await expect(page.locator('.server-title h3')).toHaveText([b.config.name!, a.config.name!, c.config.name!]);
+  await devtools.detach();
+  const after: DashboardData = await (await page.request.get('/api/dashboard')).json();
+  expect(after.servers.slice(0, -3)).toEqual(data.servers.slice(0, -3));
+  expect(after.servers.slice(-3)).toEqual([b, a, c]);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.setViewportSize({ width: 320, height: 740 });
+  expect(
+    await page
+      .locator('.server-card-footer')
+      .evaluateAll((elements) => elements.every((el) => el.scrollWidth <= el.clientWidth)),
+  ).toBe(true);
+  await page.screenshot({ path: 'test-results/server-actions-small-mobile.png', fullPage: false });
+});

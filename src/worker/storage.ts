@@ -47,8 +47,7 @@ export class Store {
   async initializeCatalogs(): Promise<void> {
     // Only first-time setup calls this, never a dashboard/catalog read.
     if ((await this.get(ICON_LIBRARIES_KEY)) === null) await this.saveIconLibraries(defaultIconLibraries());
-    if ((await this.get(SERVER_CATALOG_KEY)) === null)
-      await this.saveServers(await this.list<ServerRecord>('server:'));
+    if ((await this.get(SERVER_CATALOG_KEY)) === null) await this.saveServers(await this.servers());
   }
   private async catalog<T>(key: string, fallback: () => Promise<T[]>): Promise<Catalog<T>> {
     const value = await this.get<Catalog<T> | T[]>(key);
@@ -123,7 +122,11 @@ export class Store {
     return (await this.getMany<T>(await this.keys(prefix))).filter((row): row is T => row !== null);
   }
   async serverCatalog(): Promise<Catalog<ServerRecord>> {
-    const catalog = await this.catalog(SERVER_CATALOG_KEY, () => this.list<ServerRecord>('server:'));
+    const catalog = await this.catalog(SERVER_CATALOG_KEY, async () =>
+      // Legacy per-record storage had no explicit order. Preserve its previous
+      // display order until the first catalog write, without writing on GET.
+      (await this.list<ServerRecord>('server:')).sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
+    );
     return {
       ...catalog,
       items: catalog.items.map((server) => {

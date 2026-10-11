@@ -234,12 +234,61 @@
   text-overflow: ellipsis;
   margin-top: 2px;
 }
-.server-card-top > .icon-button {
+.server-card-actions {
+  display: flex;
+  gap: 2px;
   margin-right: -6px;
   align-self: flex-start;
+  flex-shrink: 0;
+}
+.server-drag-handle {
+  display: grid;
+  place-items: center;
   width: 24px;
   height: 24px;
-  color: #bcc0cd;
+  border-radius: 7px;
+  color: #9690ad;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+.server-drag-handle:hover:not(:disabled),
+.server-drag-handle:focus-visible {
+  color: var(--accent-dark);
+  background: #f0ebff;
+}
+.server-drag-handle:active:not(:disabled) {
+  cursor: grabbing;
+}
+.server-card.is-dragging {
+  opacity: 0.4;
+  border-color: #a491e5;
+  background: #f4f0ff;
+}
+.server-drag-preview {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 22px;
+  background: #fff;
+  border: 1px solid #b8a9ec;
+  border-radius: 12px;
+  box-shadow: 0 14px 40px #40316c30;
+  color: var(--accent-dark);
+  cursor: grabbing;
+}
+.server-drag-preview strong {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 14px;
+  color: #252b43;
+}
+@media (pointer: coarse) {
+  .server-drag-handle {
+    width: 40px;
+    height: 40px;
+  }
 }
 .server-details {
   display: flex;
@@ -287,16 +336,26 @@
   gap: 8px;
   align-items: center;
 }
+.server-edit-button,
 .server-delete-button {
   display: inline-flex;
   align-items: center;
   gap: 5px;
   min-height: 36px;
-  padding: 6px 8px;
+  padding: 6px 4px;
   border-radius: 8px;
-  color: #a65b69;
   font-size: 11px;
   white-space: nowrap;
+}
+.server-edit-button {
+  color: #83739f;
+}
+.server-edit-button:hover {
+  color: var(--accent-dark);
+  background: #f0ebff;
+}
+.server-delete-button {
+  color: #a65b69;
 }
 .server-delete-button:hover {
   color: #a7354c;
@@ -458,7 +517,7 @@
 }
 .list-layout .server-card {
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) minmax(230px, 1fr) 280px;
+  grid-template-columns: minmax(220px, 1fr) minmax(230px, 1fr) 320px;
 }
 .list-layout .server-card-top {
   padding: 18px;

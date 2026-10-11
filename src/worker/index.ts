@@ -29,6 +29,7 @@ import {
 import { Store, StorageBusyError } from './storage';
 import { discoveryInput, discoverEmbyLines, EmbyDiscoveryError } from './emby-lines';
 import { MAX_SERVERS, MAX_SERVER_IMPORT_BYTES, validateServerImport } from '../shared/server-import';
+import { applyServerOrder } from '../shared/server-order';
 
 interface Admin {
   password: PasswordHash;
@@ -141,12 +142,12 @@ async function publicFeed(request: Request, env: Env, store: Store, slug: string
   const sub = route ? await store.get<Subscription>(`sub:${route.id}`) : null;
   if (!sub || sub.slug !== slug || !sub.enabled) throw new HttpError(404, '订阅不存在或已停用');
   const catalog = await store.servers();
-  const byId = new Map(catalog.map((server) => [server.id, server]));
-  const servers = sub.allServers
-    ? catalog
-    : sub.serverIds.map((id) => byId.get(id)).filter((item): item is ServerRecord => item !== undefined);
-  if (sub.allServers) servers.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-  return json(servers.filter((server) => server.enabled).map((server) => server.config));
+  const selected = new Set(sub.serverIds);
+  return json(
+    catalog
+      .filter((server) => server.enabled && (sub.allServers || selected.has(server.id)))
+      .map((server) => server.config),
+  );
 }
 async function handle(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
@@ -247,7 +248,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
       store.iconLibraryCatalog(),
     ]);
     return json({
-      servers: servers.items.sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
+      servers: servers.items,
       subscriptions: subscriptions.sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
       iconLibraries: iconLibraries.items,
       revisions: { servers: servers.revision, iconLibraries: iconLibraries.revision },
@@ -351,6 +352,17 @@ async function handle(request: Request, env: Env): Promise<Response> {
     // One encrypted catalog write after all validation. Never save per item.
     const catalogRevision = await store.saveServers([...catalog.items, ...servers]);
     return json({ servers, catalogRevision }, 201);
+  }
+  if (path === '/api/servers/order') {
+    if (method !== 'PUT') throw new HttpError(405, '不支持此请求方法');
+    const input = await readBody(request);
+    const catalog = await store.serverCatalog();
+    if (input.catalogRevision !== catalog.revision)
+      throw new HttpError(409, '服务器目录已更新，请刷新后重试');
+    const servers = applyServerOrder(catalog.items, input.serverIds);
+    const changed = servers.some((server, index) => server.id !== catalog.items[index].id);
+    const catalogRevision = changed ? await store.saveServers(servers) : catalog.revision;
+    return json({ serverIds: servers.map((server) => server.id), catalogRevision });
   }
   const serverMatch = path.match(/^\/api\/servers(?:\/([a-f0-9-]{36}))?$/);
   if (serverMatch) {

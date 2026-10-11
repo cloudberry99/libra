@@ -19,6 +19,7 @@ import type {
   IconLibrary,
   ServerRecord,
   ServerImportResult,
+  ServerOrderResult,
   Subscription,
 } from '../../shared/types';
 import { Brand, Button, IconButton, Message } from '../components/ui';
@@ -34,6 +35,7 @@ import { ServersPage } from './ServersPage';
 import { SubscriptionsPage } from './SubscriptionsPage';
 import { api, errorMessage } from '../api';
 import { titleOf } from '../helpers';
+import { applyServerOrder } from '../../shared/server-order';
 import type { DialogState, Page } from '../types';
 import { Toast } from '../components/Toast';
 import { IconLibrariesPage } from './IconLibrariesPage';
@@ -55,6 +57,8 @@ export function Workspace({ logout }: { logout: () => void }) {
   const [dialog, setDialog] = useState<DialogState>(null);
   const [toast, setToast] = useState('');
   const [busyId, setBusyId] = useState('');
+  const [sorting, setSorting] = useState(false);
+  const serverWritePending = useRef(false);
   const [mobileNav, setMobileNav] = useState(false);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   function notify(message: string) {
@@ -71,6 +75,7 @@ export function Workspace({ logout }: { logout: () => void }) {
     }
   }
   async function load() {
+    if (serverWritePending.current) return;
     setLoading(true);
     setError('');
     try {
@@ -125,6 +130,8 @@ export function Workspace({ logout }: { logout: () => void }) {
     notify('图标库已保存');
   }
   async function toggleServer(server: ServerRecord) {
+    if (serverWritePending.current) return;
+    serverWritePending.current = true;
     setBusyId(server.id);
     try {
       saveServer(
@@ -137,7 +144,34 @@ export function Workspace({ logout }: { logout: () => void }) {
     } catch (error) {
       notify(errorMessage(error));
     } finally {
+      serverWritePending.current = false;
       setBusyId('');
+    }
+  }
+  async function reorderServers(serverIds: string[]) {
+    if (serverWritePending.current || loading) return;
+    const before = data.servers;
+    if (serverIds.every((id, index) => id === before[index]?.id)) return;
+    serverWritePending.current = true;
+    setSorting(true);
+    setData((previous) => ({ ...previous, servers: applyServerOrder(previous.servers, serverIds) }));
+    try {
+      const result = await api<ServerOrderResult>('/api/servers/order', 'PUT', {
+        serverIds,
+        catalogRevision: data.revisions.servers,
+      });
+      setData((previous) => ({
+        ...previous,
+        servers: applyServerOrder(previous.servers, result.serverIds),
+        revisions: { ...previous.revisions, servers: result.catalogRevision },
+      }));
+      notify('排序已保存');
+    } catch (error) {
+      setData((previous) => ({ ...previous, servers: before }));
+      notify(`排序未保存：${errorMessage(error)}`);
+    } finally {
+      serverWritePending.current = false;
+      setSorting(false);
     }
   }
   async function toggleSubscription(subscription: Subscription) {
@@ -257,6 +291,7 @@ export function Workspace({ logout }: { logout: () => void }) {
             </div>
             {page !== 'security' && (
               <Button
+                disabled={sorting}
                 onClick={() =>
                   setDialog(
                     page === 'servers'
@@ -288,6 +323,8 @@ export function Workspace({ logout }: { logout: () => void }) {
               setDialog={setDialog}
               toggleServer={toggleServer}
               busyId={busyId}
+              sorting={sorting}
+              reorderServers={reorderServers}
             />
           )}
           {page === 'subscriptions' && (
