@@ -385,24 +385,38 @@ test('Emby identity can be retried and copied, and HTTP discovery requires confi
     .getByPlaceholder('https://media.example.com:8920/emby')
     .fill('http://discovery.example.com/emby');
   const prompts: string[] = [];
-  let accepted = false;
   page.on('dialog', async (dialog) => {
     prompts.push(dialog.message());
-    if (accepted) await dialog.accept();
-    else await dialog.dismiss();
+    await dialog.dismiss();
   });
   await page.getByRole('button', { name: '获取备用线路', exact: true }).click();
-  expect(prompts).toHaveLength(1);
-  expect(prompts[0]).toContain('Cloudflare 到 Emby');
-  expect(prompts[0]).toContain('明文');
-  expect(prompts[0]).not.toContain('中文 &+#%');
+  const httpConfirmation = page.getByRole('dialog', { name: '通过 HTTP 获取线路？', exact: true });
+  await expect(httpConfirmation).toBeVisible();
+  await expect(page.locator('dialog[open]')).toHaveCount(2);
+  await expect(httpConfirmation).toContainText('Cloudflare 到 Emby');
+  await expect(httpConfirmation).toContainText('明文');
+  await expect(httpConfirmation).not.toContainText('中文 &+#%');
+  await expect(httpConfirmation.getByRole('button', { name: '继续获取' })).toHaveClass(/primary/);
   expect(sent).toEqual([]);
+  await page.screenshot({ path: 'test-results/http-confirmation-mobile.png', fullPage: true });
+  await httpConfirmation.getByRole('button', { name: '取消', exact: true }).click();
+  await expect(httpConfirmation).toHaveCount(0);
+  await expect(page.locator('dialog[open]')).toHaveCount(1);
+  await expect(page.locator('body')).toHaveClass(/modal-open/);
   await expect(page.getByPlaceholder('服务器登录密码')).toHaveValue(' 中文 &+#% ');
   await expect(page.getByRole('button', { name: '获取备用线路', exact: true })).toBeEnabled();
-  accepted = true;
+  await expect(page.getByRole('button', { name: '获取备用线路', exact: true })).toBeFocused();
   await page.getByRole('button', { name: '获取备用线路', exact: true }).click();
+  await expect(httpConfirmation).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(httpConfirmation).toHaveCount(0);
+  await expect(page.getByRole('dialog', { name: '添加服务器', exact: true })).toBeVisible();
+  expect(sent).toEqual([]);
+  await page.getByRole('button', { name: '获取备用线路', exact: true }).click();
+  await httpConfirmation.getByRole('button', { name: '继续获取', exact: true }).click();
   await expect(page.locator('.line-discovery-message')).toHaveText('没有发现新的备用线路');
-  expect(prompts).toHaveLength(2);
+  await expect(httpConfirmation).toHaveCount(0);
+  await expect(page.locator('body')).toHaveClass(/modal-open/);
   expect(sent).toEqual([
     {
       primary: { url: 'http://discovery.example.com/emby' },
@@ -414,7 +428,8 @@ test('Emby identity can be retried and copied, and HTTP discovery requires confi
     .fill('https://discovery.example.com/emby');
   await page.getByRole('button', { name: '获取备用线路', exact: true }).click();
   await expect(page.locator('.line-discovery-message')).toHaveText('没有发现新的备用线路');
-  expect(prompts).toHaveLength(2);
+  expect(prompts).toEqual([]);
+  await expect(httpConfirmation).toHaveCount(0);
   expect(sent).toHaveLength(2);
   expect((await (await page.request.get('/api/settings/emby')).json()).deviceId).toBe(identity.deviceId);
 });
@@ -714,14 +729,40 @@ test('icon library management and GitHub token settings persist without revealin
   await page.getByRole('button', { name: 'GitHub Token', exact: true }).click();
   await expect(page.getByText('已配置 Token', { exact: true })).toBeVisible();
   await expect(page.getByPlaceholder('粘贴 GitHub Personal Access Token')).toHaveValue('');
-  page.once('dialog', (dialog) => dialog.dismiss());
+  const nativePrompts: string[] = [];
+  page.on('dialog', async (dialog) => {
+    nativePrompts.push(dialog.message());
+    await dialog.dismiss();
+  });
   await page.getByRole('button', { name: '移除 Token', exact: true }).click();
+  const removal = page.getByRole('dialog', { name: '移除 GitHub Token？', exact: true });
+  await expect(removal).toBeVisible();
+  await expect(page.locator('dialog[open]')).toHaveCount(2);
+  await removal.getByRole('button', { name: '取消', exact: true }).click();
   await expect(page.getByRole('dialog')).toHaveCount(1);
+  await expect(page.locator('body')).toHaveClass(/modal-open/);
+  await expect(page.getByRole('button', { name: '移除 Token', exact: true })).toBeFocused();
   expect((await (await page.request.get('/api/settings/github')).json()).configured).toBe(true);
-  page.once('dialog', (dialog) => dialog.accept());
+  let deletionAttempts = 0;
+  await page.route('**/api/settings/github', (route) => {
+    if (route.request().method() !== 'DELETE') return route.continue();
+    deletionAttempts++;
+    return deletionAttempts === 1
+      ? route.fulfill({ status: 503, json: { error: '设置暂时无法保存，请稍后重试' } })
+      : route.continue();
+  });
   await page.getByRole('button', { name: '移除 Token', exact: true }).click();
+  await removal.getByRole('button', { name: '确认移除', exact: true }).click();
+  await expect(removal.getByRole('alert')).toHaveText('设置暂时无法保存，请稍后重试');
+  await expect(removal).toBeVisible();
+  expect((await (await page.request.get('/api/settings/github')).json()).configured).toBe(true);
+  await page.screenshot({ path: 'test-results/token-removal-confirmation-desktop.png', fullPage: true });
+  await removal.getByRole('button', { name: '确认移除', exact: true }).click();
   await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(page.locator('body')).not.toHaveClass(/modal-open/);
   await expect(page.locator('.toast')).toHaveText('GitHub Token 已移除');
+  expect(deletionAttempts).toBe(2);
+  expect(nativePrompts).toEqual([]);
   expect((await (await page.request.get('/api/settings/github')).json()).configured).toBe(false);
   await page.getByRole('button', { name: '删除 私人图库', exact: true }).click();
   await page.getByRole('button', { name: '确认删除', exact: true }).click();

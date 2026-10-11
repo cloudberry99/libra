@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { Trash2 } from 'lucide-react';
 import { Button, Message } from '../components/ui';
 import { Modal } from '../components/Modal';
@@ -9,11 +9,17 @@ export function ConfirmDialog({
   description,
   close,
   confirm,
+  confirmLabel = '确认删除',
+  confirmVariant = 'danger',
+  confirmIcon = <Trash2 size={16} />,
 }: {
   title: string;
   description: string;
   close: () => void;
   confirm: () => Promise<void>;
+  confirmLabel?: string;
+  confirmVariant?: 'primary' | 'danger';
+  confirmIcon?: ReactNode;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -29,11 +35,12 @@ export function ConfirmDialog({
         {error && <Message tone="error">{error}</Message>}
       </div>
       <div className="modal-footer">
-        <Button variant="secondary" onClick={close} disabled={busy}>
+        <Button type="button" variant="secondary" onClick={close} disabled={busy}>
           取消
         </Button>
         <Button
-          variant="danger"
+          type="button"
+          variant={confirmVariant}
           busy={busy}
           onClick={async () => {
             setBusy(true);
@@ -47,8 +54,8 @@ export function ConfirmDialog({
             }
           }}
         >
-          <Trash2 size={16} />
-          确认删除
+          {confirmIcon}
+          {confirmLabel}
         </Button>
       </div>
     </Modal>

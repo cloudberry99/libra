@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactNode } from 'react';
+import { useId, useLayoutEffect, useRef, type ReactNode } from 'react';
 import { X } from 'lucide-react';
 import { IconButton } from './ui';
 
@@ -16,19 +16,24 @@ export function Modal({
   wide?: boolean;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
-  useEffect(() => {
-    ref.current?.showModal();
+  const titleId = useId();
+  useLayoutEffect(() => {
+    const dialog = ref.current;
+    dialog?.showModal();
     window.dispatchEvent(new Event('libra:modal-open'));
     document.body.classList.add('modal-open');
     return () => {
-      document.body.classList.remove('modal-open');
+      // Close before React removes the node so the browser restores focus to
+      // its opener. Another dialog may still need the body's scroll lock.
+      dialog?.close();
+      if (!document.querySelector('dialog[open]')) document.body.classList.remove('modal-open');
     };
   }, []);
   return (
     <dialog
       ref={ref}
       className={`modal ${wide ? 'wide' : ''}`}
-      aria-labelledby="modal-title"
+      aria-labelledby={titleId}
       onCancel={(event) => {
         event.preventDefault();
         close();
@@ -48,7 +53,7 @@ export function Modal({
     >
       <div className="modal-header">
         <div>
-          <h2 id="modal-title">{title}</h2>
+          <h2 id={titleId}>{title}</h2>
           {subtitle && <p>{subtitle}</p>}
         </div>
         <IconButton label="关闭" onClick={close}>
