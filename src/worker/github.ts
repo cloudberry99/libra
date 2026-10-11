@@ -92,8 +92,11 @@ export function githubRawURL(source: string): string | null {
     return url.href;
   }
   const match = isGitHubContentAPI(url) && url.pathname.match(/^\/repos\/([^/]+)\/([^/]+)\/contents\/(.+)$/);
-  if (match)
-    return `https://raw.githubusercontent.com/${match[1]}/${match[2]}/${encodeURIComponent(url.searchParams.get('ref') || 'HEAD')}/${match[3]}`;
+  if (match) {
+    // Raw URLs keep slash refs as path segments, just like GitHub's download_url.
+    const ref = (url.searchParams.get('ref') || 'HEAD').split('/').map(encodeURIComponent).join('/');
+    return `https://raw.githubusercontent.com/${match[1]}/${match[2]}/${ref}/${match[3]}`;
+  }
   return null;
 }
 

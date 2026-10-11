@@ -337,6 +337,164 @@ test('server-side line discovery merges without replacing manual lines, stays in
   expect(directRequests).toEqual([]);
 });
 
+test('Emby identity can be retried and copied, and HTTP discovery requires confirmation before sending credentials', async ({
+  page,
+}) => {
+  await login(page);
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+  const identity = await (await page.request.get('/api/settings/emby')).json();
+  let identityRequests = 0;
+  await page.route('**/api/settings/emby', (route) => {
+    identityRequests++;
+    return identityRequests === 1
+      ? route.fulfill({ status: 503, json: { error: '暂时无法读取设备信息' } })
+      : route.continue();
+  });
+  const sent: unknown[] = [];
+  await page.route('**/api/servers/discover-lines', (route) => {
+    sent.push(route.request().postDataJSON());
+    return route.fulfill({ json: { lines: [], skipped: 0 } });
+  });
+  await page.getByRole('button', { name: '添加服务器', exact: true }).click();
+  await expect(page.locator('.line-discovery-note')).toContainText('客户端白名单与设备限制');
+  expect(identityRequests).toBe(0);
+  const details = page.locator('.emby-identity');
+  await details.locator('summary').click();
+  await expect(details.getByRole('alert')).toHaveText('暂时无法读取设备信息');
+  await details.getByRole('button', { name: '重新读取 DeviceId' }).click();
+  await expect(details.getByLabel('DeviceId', { exact: true })).toHaveValue(identity.deviceId);
+  await expect(details.getByLabel('DeviceId', { exact: true })).toHaveAttribute('readonly');
+  await expect(details.locator('.emby-identity-content')).toHaveAttribute('aria-busy', 'false');
+  await details.getByRole('button', { name: '复制 DeviceId' }).click();
+  await expect(details.getByRole('status')).toHaveText('DeviceId 已复制');
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(identity.deviceId);
+  await details.locator('summary').click();
+  await details.locator('summary').click();
+  await expect(details.getByLabel('DeviceId', { exact: true })).toBeVisible();
+  expect(identityRequests).toBe(2);
+  expect(sent).toEqual([]);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await details.getByLabel('DeviceId', { exact: true }).scrollIntoViewIfNeeded();
+  expect(await page.getByRole('dialog').evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+  await page.screenshot({ path: 'test-results/emby-identity-mobile.png', fullPage: true });
+
+  await page.getByPlaceholder('例如：家庭媒体库').fill('HTTP 确认草稿');
+  await page.getByPlaceholder('Emby 账号').fill('demo');
+  await page.getByPlaceholder('服务器登录密码').fill(' 中文 &+#% ');
+  await page
+    .getByPlaceholder('https://media.example.com:8920/emby')
+    .fill('http://discovery.example.com/emby');
+  const prompts: string[] = [];
+  let accepted = false;
+  page.on('dialog', async (dialog) => {
+    prompts.push(dialog.message());
+    if (accepted) await dialog.accept();
+    else await dialog.dismiss();
+  });
+  await page.getByRole('button', { name: '获取备用线路', exact: true }).click();
+  expect(prompts).toHaveLength(1);
+  expect(prompts[0]).toContain('Cloudflare 到 Emby');
+  expect(prompts[0]).toContain('明文');
+  expect(prompts[0]).not.toContain('中文 &+#%');
+  expect(sent).toEqual([]);
+  await expect(page.getByPlaceholder('服务器登录密码')).toHaveValue(' 中文 &+#% ');
+  await expect(page.getByRole('button', { name: '获取备用线路', exact: true })).toBeEnabled();
+  accepted = true;
+  await page.getByRole('button', { name: '获取备用线路', exact: true }).click();
+  await expect(page.locator('.line-discovery-message')).toHaveText('没有发现新的备用线路');
+  expect(prompts).toHaveLength(2);
+  expect(sent).toEqual([
+    {
+      primary: { url: 'http://discovery.example.com/emby' },
+      credentials: { username: 'demo', password: ' 中文 &+#% ' },
+    },
+  ]);
+  await page
+    .getByPlaceholder('https://media.example.com:8920/emby')
+    .fill('https://discovery.example.com/emby');
+  await page.getByRole('button', { name: '获取备用线路', exact: true }).click();
+  await expect(page.locator('.line-discovery-message')).toHaveText('没有发现新的备用线路');
+  expect(prompts).toHaveLength(2);
+  expect(sent).toHaveLength(2);
+  expect((await (await page.request.get('/api/settings/emby')).json()).deviceId).toBe(identity.deviceId);
+});
+
+test('large line catalogs paginate and preserve selection across searches with bounded bulk selection', async ({
+  page,
+}) => {
+  await login(page);
+  await page.route('**/api/servers/discover-lines', (route) =>
+    route.fulfill({
+      json: {
+        lines: Array.from({ length: 512 }, (_, index) => ({
+          url: `https://found-${index}.example.com/emby`,
+          name: `线路 ${String(index).padStart(3, '0')}`,
+        })),
+        skipped: 0,
+      },
+    }),
+  );
+  await page.getByRole('button', { name: '添加服务器', exact: true }).click();
+  await page.getByPlaceholder('例如：家庭媒体库').fill('分页批量线路回归');
+  await page.getByPlaceholder('Emby 账号').fill('demo');
+  await page
+    .getByPlaceholder('https://media.example.com:8920/emby')
+    .fill('https://pagination.example.com/emby');
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByRole('button', { name: '获取备用线路', exact: true }).click();
+  const selection = page.getByRole('region', { name: '选择获取的备用线路' });
+  const pagination = selection.getByRole('navigation', { name: '备用线路分页' });
+  await expect(selection.getByRole('checkbox')).toHaveCount(20);
+  await expect(pagination).toContainText('1 / 26 · 512 条');
+  await expect(pagination.getByRole('button', { name: '上一页' })).toBeDisabled();
+  await selection.getByRole('checkbox', { name: /线路 000/ }).check();
+  await pagination.getByRole('button', { name: '下一页' }).click();
+  await expect(pagination).toContainText('2 / 26 · 512 条');
+  await selection.getByRole('checkbox', { name: /线路 020/ }).check();
+  await selection.getByLabel('搜索获取的备用线路').fill('线路 50');
+  await expect(selection.getByRole('checkbox')).toHaveCount(10);
+  await expect(pagination).toContainText('1 / 1 · 10 条');
+  await expect(pagination.getByRole('button', { name: '下一页' })).toBeDisabled();
+  await selection.getByRole('button', { name: '全选匹配线路' }).click();
+  await expect(selection).toContainText('已选 12 / 32');
+  await selection.getByLabel('搜索获取的备用线路').fill('');
+  await expect(selection.getByRole('checkbox', { name: /线路 000/ })).toBeChecked();
+  await selection.getByRole('button', { name: '按顺序选满 32 条' }).click();
+  await expect(selection).toContainText('已选 32 / 32');
+  await expect(selection.getByRole('button', { name: '按顺序选满 32 条' })).toBeDisabled();
+  await pagination.getByRole('button', { name: '下一页' }).click();
+  await expect(selection.getByRole('checkbox', { name: /线路 020/ })).toBeChecked();
+  await expect(selection.getByRole('checkbox', { name: /线路 021/ })).toBeChecked();
+  await expect(selection.getByRole('checkbox', { name: /线路 022/ })).toBeDisabled();
+  await selection.getByRole('button', { name: '清空选择' }).click();
+  await expect(selection).toContainText('已选 0 / 32');
+  await expect(selection.getByRole('button', { name: '添加所选线路' })).toBeDisabled();
+  // Select a later page first; submission must still preserve the source's priority order.
+  await selection.getByRole('checkbox', { name: /线路 020/ }).check();
+  await pagination.getByRole('button', { name: '上一页' }).click();
+  await selection.getByRole('checkbox', { name: /线路 000/ }).check();
+  await selection.getByLabel('搜索获取的备用线路').fill('线路 50');
+  await selection.getByRole('button', { name: '全选匹配线路' }).click();
+  await selection.getByLabel('搜索获取的备用线路').fill('');
+  await selection.getByRole('button', { name: '按顺序选满 32 条' }).click();
+  await pagination.scrollIntoViewIfNeeded();
+  expect(await page.getByRole('dialog').evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+  await page.screenshot({ path: 'test-results/line-pagination-mobile.png', fullPage: true });
+  await selection.getByRole('button', { name: '添加所选线路' }).click();
+  await expect(page.getByPlaceholder('例如：家中直连')).toHaveCount(32);
+  await expect(page.getByRole('button', { name: /添加备用线路/ })).toBeDisabled();
+  await page.getByRole('dialog').getByRole('button', { name: '添加服务器', exact: true }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  const dashboard: DashboardData = await (await page.request.get('/api/dashboard')).json();
+  const saved = dashboard.servers.find((row) => row.config.name === '分页批量线路回归')!;
+  expect(saved.config.alternates?.map((line) => line.name)).toEqual(
+    [
+      ...Array.from({ length: 22 }, (_, index) => index),
+      ...Array.from({ length: 10 }, (_, index) => index + 500),
+    ].map((index) => `线路 ${String(index).padStart(3, '0')}`),
+  );
+});
+
 test('line discovery overflow allows explicit selection on mobile without silently dropping manual lines', async ({
   page,
 }) => {

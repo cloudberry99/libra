@@ -156,7 +156,10 @@ export async function discoverEmbyLines(
         await response.body?.cancel();
         if (response.status === 401) throw new EmbyDiscoveryError('Emby 登录失败，请检查用户名和密码', 422);
         if (response.status === 403)
-          throw new EmbyDiscoveryError('主线路拒绝登录，请检查账号权限及是否允许 LibraManager 访问', 422);
+          throw new EmbyDiscoveryError(
+            '主线路拒绝登录，请检查账号权限及 LibraManager 白名单；DeviceId 可在「客户端身份」中查看',
+            422,
+          );
         if (response.status === 429) throw new EmbyDiscoveryError('Emby 登录过于频繁，请稍后重试', 429);
         throw new EmbyDiscoveryError(`Emby 登录暂时不可用（HTTP ${response.status}）`);
       }

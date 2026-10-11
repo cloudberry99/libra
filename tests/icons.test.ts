@@ -177,12 +177,41 @@ test('GitHub repository redirects retain read-only authentication and raw conten
   assert.equal(calls, 2);
 });
 
+test('contents API raw URLs preserve slash ref segments and encode each segment once', () => {
+  for (const [ref, path] of [
+    ['feature/x', 'feature/x'],
+    ['refs/heads/feature/x', 'refs/heads/feature/x'],
+    ['发布/v1%图标', '%E5%8F%91%E5%B8%83/v1%25%E5%9B%BE%E6%A0%87'],
+    ['feature/with#hash', 'feature/with%23hash'],
+    ['', 'HEAD'],
+  ]) {
+    const source = new URL('https://api.github.com/repos/owner/repo/contents/icons/list.json');
+    if (ref) source.searchParams.set('ref', ref);
+    assert.equal(
+      githubRawURL(source.href),
+      `https://raw.githubusercontent.com/owner/repo/${path}/icons/list.json`,
+    );
+  }
+});
+
 test('slash refs, expired tokens and API throttling fall back to the original public raw URL without credentials', async (t) => {
-  for (const source of [
-    'https://raw.githubusercontent.com/owner/repo/feature/x/icons.json',
-    'https://raw.githubusercontent.com/owner/repo/refs/heads/feature/x/icons.json',
-    'https://github.com/owner/repo/blob/feature/x/icons.json',
-    'https://api.github.com/repos/owner/repo/contents/icons.json?ref=feature%2Fx',
+  for (const [source, expectedRaw] of [
+    [
+      'https://raw.githubusercontent.com/owner/repo/feature/x/icons.json',
+      'https://raw.githubusercontent.com/owner/repo/feature/x/icons.json',
+    ],
+    [
+      'https://raw.githubusercontent.com/owner/repo/refs/heads/feature/x/icons.json',
+      'https://raw.githubusercontent.com/owner/repo/refs/heads/feature/x/icons.json',
+    ],
+    [
+      'https://github.com/owner/repo/blob/feature/x/icons.json',
+      'https://raw.githubusercontent.com/owner/repo/feature/x/icons.json',
+    ],
+    [
+      'https://api.github.com/repos/owner/repo/contents/icons.json?ref=feature%2Fx',
+      'https://raw.githubusercontent.com/owner/repo/feature/x/icons.json',
+    ],
   ])
     for (const status of [401, 403, 404]) {
       await t.test(`${status} ${source}`, async (child) => {
@@ -195,7 +224,7 @@ test('slash refs, expired tokens and API throttling fall back to the original pu
             assert.equal(headers.get('Authorization'), 'Bearer secret');
             return new Response('private error details', { status });
           }
-          assert.equal(String(input), githubRawURL(source));
+          assert.equal(String(input), expectedRaw);
           assert.equal(headers.get('Authorization'), null);
           assert.equal(headers.get('Cookie'), null);
           return Response.json(catalog);

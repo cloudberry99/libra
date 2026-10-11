@@ -3,6 +3,7 @@ import { Check, Download, Plus, Server, Trash2, Waypoints } from 'lucide-react';
 import type { CatalogWrite, DiscoveredLines, Endpoint, IconLibrary, ServerRecord } from '../../shared/types';
 import { LogoField } from '../components/LogoField';
 import { LineSelection } from '../components/LineSelection';
+import { EmbyIdentity } from '../components/EmbyIdentity';
 import { baseURL, validateConfig } from '../../shared/validation';
 import { newAlternateLines } from '../../shared/lines';
 import { Button, IconButton, Field, PasswordInput, Message, Switch } from '../components/ui';
@@ -66,13 +67,20 @@ export function ServerEditor({
   }
   async function discover() {
     if (working) return;
-    setDiscovering(true);
     setDiscoveryError('');
-    setDiscoveryMessage('');
-    setCandidates(null);
     try {
       const url = baseURL(primary.url);
       if (!username.trim()) throw new Error('请先填写 Emby 用户名');
+      if (
+        new URL(url).protocol === 'http:' &&
+        !window.confirm(
+          '当前主线路使用 HTTP，Cloudflare 到 Emby 服务器之间的连接未加密，用户名和密码将以明文发送。仍要获取备用线路吗？',
+        )
+      )
+        return;
+      setDiscovering(true);
+      setDiscoveryMessage('');
+      setCandidates(null);
       const result = await api<DiscoveredLines>('/api/servers/discover-lines', 'POST', {
         primary: { url },
         credentials: { username, password },
@@ -180,6 +188,10 @@ export function ServerEditor({
                 {discovering ? '正在获取' : '获取备用线路'}
               </Button>
             </div>
+            <p className="line-discovery-note">
+              获取线路会以 LibraManager 登录并尝试登出，请先确认服务器的客户端白名单与设备限制。
+            </p>
+            <EmbyIdentity />
             <div className="line-editor primary-line">
               <div className="line-label">
                 <span className="route-dot" />
