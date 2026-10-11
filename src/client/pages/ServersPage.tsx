@@ -184,12 +184,16 @@ export function ServersPage({
                   {busyId === server.id ? '保存中' : server.enabled ? '已启用' : '已停用'}
                 </button>
                 <div>
-                  <IconButton
-                    label={`删除 ${titleOf(server)}`}
+                  <button
+                    type="button"
+                    className="server-delete-button"
+                    aria-label={`删除 ${titleOf(server)}`}
+                    disabled={!!busyId}
                     onClick={() => setDialog({ kind: 'deleteServer', server })}
                   >
                     <Trash2 size={15} />
-                  </IconButton>
+                    删除
+                  </button>
                   <button className="import-button" onClick={() => setDialog({ kind: 'import', server })}>
                     导入播放器
                     <ArrowUpRight size={15} />

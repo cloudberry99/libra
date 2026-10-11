@@ -18,6 +18,7 @@ import type {
   DashboardData,
   IconLibrary,
   ServerRecord,
+  ServerImportResult,
   Subscription,
 } from '../../shared/types';
 import { Brand, Button, IconButton, Message } from '../components/ui';
@@ -95,6 +96,14 @@ export function Workspace({ logout }: { logout: () => void }) {
         : [...previous.servers, record],
     }));
     notify('服务器已保存');
+  }
+  function importServers({ catalogRevision, servers }: ServerImportResult) {
+    setData((previous) => ({
+      ...previous,
+      revisions: { ...previous.revisions, servers: catalogRevision },
+      servers: [...previous.servers, ...servers],
+    }));
+    notify(`已导入 ${servers.length} 台服务器`);
   }
   function saveSubscription(record: Subscription) {
     setData((previous) => ({
@@ -341,7 +350,7 @@ export function Workspace({ logout }: { logout: () => void }) {
       {dialog?.kind === 'json' && (
         <JsonImport
           close={() => setDialog(null)}
-          save={saveServer}
+          save={importServers}
           catalogRevision={data.revisions.servers}
         />
       )}

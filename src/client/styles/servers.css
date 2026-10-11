@@ -287,10 +287,20 @@
   gap: 8px;
   align-items: center;
 }
-.server-card-footer .icon-button {
-  height: 24px;
-  width: 24px;
-  color: #bdc1ce;
+.server-delete-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 36px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  color: #a65b69;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.server-delete-button:hover {
+  color: #a7354c;
+  background: #fceff2;
 }
 .status-button {
   display: flex;
@@ -448,7 +458,7 @@
 }
 .list-layout .server-card {
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) minmax(230px, 1fr) 220px;
+  grid-template-columns: minmax(220px, 1fr) minmax(230px, 1fr) 280px;
 }
 .list-layout .server-card-top {
   padding: 18px;

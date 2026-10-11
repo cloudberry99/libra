@@ -28,6 +28,7 @@ import {
 } from './crypto';
 import { Store, StorageBusyError } from './storage';
 import { discoveryInput, discoverEmbyLines, EmbyDiscoveryError } from './emby-lines';
+import { MAX_SERVERS, MAX_SERVER_IMPORT_BYTES, validateServerImport } from '../shared/server-import';
 
 interface Admin {
   password: PasswordHash;
@@ -64,7 +65,7 @@ const sessionToken = (request: Request) =>
     ?.slice(cookieName(request).length + 1) ?? '';
 const configured = (env: Env) => typeof env.APP_SECRET === 'string' && env.APP_SECRET.length >= 32;
 const routeKey = async (slug: string) => `route:${await digest(slug)}`;
-async function readBody(request: Request): Promise<Record<string, unknown>> {
+async function readBody(request: Request, maxBytes = 128 * 1024): Promise<Record<string, unknown>> {
   if (
     request.headers.get('Origin') !== new URL(request.url).origin ||
     request.headers.get('X-Libra-Request') !== '1'
@@ -80,9 +81,10 @@ async function readBody(request: Request): Promise<Record<string, unknown>> {
     const { done, value } = await reader.read();
     if (done) break;
     size += value.byteLength;
-    if (size > 128 * 1024) {
+    if (size > maxBytes) {
       await reader.cancel();
-      throw new HttpError(413, '请求内容超过 128 KB');
+      const limit = maxBytes >= 1024 * 1024 ? `${maxBytes / (1024 * 1024)} MiB` : `${maxBytes / 1024} KB`;
+      throw new HttpError(413, `请求内容超过 ${limit}`);
     }
     chunks.push(value);
   }
@@ -326,6 +328,30 @@ async function handle(request: Request, env: Env): Promise<Response> {
     const deviceId = await store.embyDeviceId();
     return json(await discoverEmbyLines(input, deviceId));
   }
+  if (path === '/api/servers/import') {
+    if (method !== 'POST') throw new HttpError(405, '不支持此请求方法');
+    const input = await readBody(request, MAX_SERVER_IMPORT_BYTES);
+    const configs = validateServerImport(input.configs);
+    const catalog = await store.serverCatalog();
+    if (input.catalogRevision !== catalog.revision)
+      throw new HttpError(409, '服务器目录已更新，请刷新后重试');
+    if (catalog.items.length + configs.length > MAX_SERVERS)
+      throw new InputError(
+        `当前已有 ${catalog.items.length} 台，本次导入 ${configs.length} 台，超过 ${MAX_SERVERS} 台上限，整批未导入`,
+      );
+    const now = new Date().toISOString();
+    const servers: ServerRecord[] = configs.map((config) => ({
+      id: crypto.randomUUID(),
+      config,
+      enabled: true,
+      version: random(12),
+      createdAt: now,
+      updatedAt: now,
+    }));
+    // One encrypted catalog write after all validation. Never save per item.
+    const catalogRevision = await store.saveServers([...catalog.items, ...servers]);
+    return json({ servers, catalogRevision }, 201);
+  }
   const serverMatch = path.match(/^\/api\/servers(?:\/([a-f0-9-]{36}))?$/);
   if (serverMatch) {
     if (!['POST', 'PUT', 'DELETE'].includes(method)) throw new HttpError(405, '不支持此请求方法');
@@ -338,7 +364,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
     const existing = id ? servers.find((server) => server.id === id) : undefined;
     if (id && !existing) throw new HttpError(404, '服务器不存在');
     if (method === 'POST' && !id) {
-      if (servers.length >= 200) throw new HttpError(400, '最多维护 200 台服务器');
+      if (servers.length >= MAX_SERVERS) throw new HttpError(400, `最多维护 ${MAX_SERVERS} 台服务器`);
       const now = new Date().toISOString();
       const record: ServerRecord = {
         id: crypto.randomUUID(),

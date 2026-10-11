@@ -3,6 +3,12 @@ import { PNG } from 'pngjs';
 import jsQR from 'jsqr';
 import type { DashboardData } from '../../src/shared/types';
 
+test.beforeEach(async ({ context }, testInfo) => {
+  // Each scenario represents a different client. Keep production rate limits
+  // intact without exhausting one shared local IP through repeated logins.
+  await context.setExtraHTTPHeaders({ 'CF-Connecting-IP': `2001:db8::${testInfo.line.toString(16)}` });
+});
+
 async function login(page: Page) {
   await page.goto('/');
   await expect(page.getByRole('heading', { name: /创建你的连接空间|欢迎回来/ })).toBeVisible();
@@ -61,7 +67,7 @@ test('admin workflow, player payload, subscriptions and scannable QR on desktop 
     'EplayerX',
     'Rex',
     'Hills',
-    '小幻播放器',
+    '小幻',
   ]);
   // The toast existed before this modal opened and must be above its backdrop.
   const devtools = await page.context().newCDPSession(page);
@@ -93,7 +99,7 @@ test('admin workflow, player payload, subscriptions and scannable QR on desktop 
   await expect(page.getByRole('alert')).toContainText('基础路径');
   await page.getByRole('button', { name: /Hills/ }).click();
   await expect(page.getByRole('alert')).toContainText('基础路径');
-  await page.getByRole('button', { name: /小幻播放器/ }).click();
+  await page.getByRole('button', { name: '小幻', exact: true }).click();
   await expect(page.getByRole('alert')).toContainText('基础路径');
   await page.getByRole('button', { name: '关闭', exact: true }).click();
   // Fictional data only, used to inspect populated layouts.
@@ -217,7 +223,7 @@ test('Rex follows EplayerX, opens and copies the correct import URL with a balan
     'EplayerX',
     'Rex',
     'Hills',
-    '小幻播放器',
+    '小幻',
   ]);
   await page.getByRole('button', { name: 'Rex', exact: true }).click();
   const open = page.getByRole('link', { name: '打开 Rex', exact: true });
@@ -600,11 +606,26 @@ test('deleting a selected server cannot block subscription toggles, and delete t
   await expect(page.locator('.toast')).toHaveText('订阅链接已保存');
   await expect(page.locator('.toast')).toBeVisible();
   await navigate(page, '服务器');
-  await page.getByRole('button', { name: '删除 删除回归媒体库', exact: true }).click();
+  const deleteButton = page.getByRole('button', { name: '删除 删除回归媒体库', exact: true });
+  await expect(deleteButton).toHaveText('删除');
+  await deleteButton.click();
+  await page.getByRole('button', { name: '取消', exact: true }).click();
+  await expect(deleteButton).toBeVisible();
+  expect(await (await page.request.get('/RegressionSelected1234')).json()).toHaveLength(1);
+  await page.getByRole('button', { name: '列表视图', exact: true }).click();
+  await expect(deleteButton).toBeVisible();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(deleteButton).toBeVisible();
+  await deleteButton.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: 'test-results/server-delete-mobile.png', fullPage: true });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await deleteButton.click();
   await page.getByRole('button', { name: '确认删除' }).click();
   await expect(page.getByRole('dialog')).toHaveCount(0);
   await expect(page.locator('.toast')).toHaveText('服务器已删除');
   await expect(page.locator('.toast')).toBeVisible();
+  await expect(deleteButton).toHaveCount(0);
+  await page.setViewportSize({ width: 1440, height: 1000 });
   await navigate(page, '订阅链接');
   const card = page.locator('.subscription-card').filter({ hasText: '删除回归订阅' });
   await expect(card).toContainText('0 台指定服务器');
@@ -887,4 +908,137 @@ test('Logo picker searches across libraries, isolates failures, paginates and pr
   data = await (await page.request.get('/api/dashboard')).json();
   expect(data.servers.find((item) => item.id === server.id)?.config.logo).toBeUndefined();
   expect(pageErrors).toEqual([]);
+});
+
+test('JSON import validates all rows before sending one batch and also accepts a single config', async ({
+  page,
+}) => {
+  await login(page);
+  const initial: DashboardData = await (await page.request.get('/api/dashboard')).json();
+  const configs = [
+    {
+      type: 'emby',
+      name: 'JSON 批量一',
+      credentials: { username: 'demo', password: ' 中文 &+#% ' },
+      primary: { url: 'https://json-one.example.com:443/emby/', name: '主线路' },
+      alternates: [{ url: 'https://json-one.example.com/emby' }, { url: 'http://[::1]:8096/' }],
+    },
+    {
+      type: 'emby',
+      name: 'JSON 批量二',
+      credentials: { password: '' },
+      primary: { url: 'https://json-two.example.com' },
+    },
+  ];
+  const requests: string[] = [];
+  page.on('request', (request) => {
+    if (request.method() === 'POST' && /\/api\/servers(?:\/import)?$/.test(new URL(request.url()).pathname))
+      requests.push(new URL(request.url()).pathname);
+  });
+  await page.getByRole('button', { name: '从 JSON 添加', exact: true }).click();
+  const input = page.getByLabel('服务器配置');
+  const submit = page.getByRole('button', { name: /校验并导入/ });
+  for (const [value, message] of [
+    ['{', 'JSON 格式不正确'],
+    ['[]', '配置数组不能为空'],
+  ]) {
+    await input.fill(value);
+    await submit.click();
+    await expect(page.getByRole('alert')).toContainText(message);
+  }
+  await input.fill(
+    JSON.stringify([
+      configs[0],
+      { ...configs[1], type: 'plex' },
+      configs[1],
+      { ...configs[0], primary: { url: 'not-a-url' } },
+    ]),
+  );
+  await submit.click();
+  await expect(page.getByRole('alert')).toContainText('整批未导入');
+  await expect(page.getByRole('alert')).toContainText('第 2 项：');
+  await expect(page.getByRole('alert')).toContainText('第 4 项：');
+  expect(requests).toEqual([]);
+  expect(((await (await page.request.get('/api/dashboard')).json()) as DashboardData).servers).toEqual(
+    initial.servers,
+  );
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({ path: 'test-results/json-import-errors-mobile.png', fullPage: true });
+  expect(await page.getByRole('dialog').evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+  await input.fill(JSON.stringify(configs));
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  // Hold the one batch request to verify the user cannot edit or double-submit it.
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route('**/api/servers/import', async (route) => {
+    await pending;
+    await route.continue();
+  });
+  await submit.click();
+  try {
+    await expect(input).toBeDisabled();
+    await expect(submit).toBeDisabled();
+    await expect(page.getByRole('button', { name: '取消', exact: true })).toBeDisabled();
+    expect(requests).toEqual(['/api/servers/import']);
+  } finally {
+    release();
+  }
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(page.locator('.toast')).toHaveText('已导入 2 台服务器');
+  await expect(page.locator('.toast')).toBeVisible();
+  await expect(page.locator('.server-card')).toHaveCount(initial.servers.length + 2);
+  let after: DashboardData = await (await page.request.get('/api/dashboard')).json();
+  expect(after.servers.slice(0, initial.servers.length)).toEqual(initial.servers);
+  expect(after.servers.slice(-2).map((row) => row.config)).toEqual([
+    {
+      ...configs[0],
+      primary: { url: 'https://json-one.example.com/emby', name: '主线路' },
+      alternates: [{ url: 'http://[::1]:8096' }],
+    },
+    configs[1],
+  ]);
+  expect(after.servers.slice(-2).every((row) => row.enabled)).toBe(true);
+  await page.getByRole('button', { name: '从 JSON 添加', exact: true }).click();
+  await input.fill(
+    JSON.stringify({ type: 'emby', name: 'JSON 单个', primary: { url: 'https://json-single.example.com' } }),
+  );
+  await submit.click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(page.locator('.toast')).toHaveText('已导入 1 台服务器');
+  await expect(page.locator('.server-card')).toHaveCount(initial.servers.length + 3);
+  expect(requests).toEqual(['/api/servers/import', '/api/servers/import']);
+  const single = page.locator('.server-card').filter({ hasText: 'JSON 单个' });
+  await single.getByRole('button', { name: '已启用', exact: true }).click();
+  await expect(single.getByRole('button', { name: '已停用', exact: true })).toBeVisible();
+  after = await (await page.request.get('/api/dashboard')).json();
+  expect(after.servers.find((row) => row.config.name === 'JSON 单个')?.enabled).toBe(false);
+});
+
+test('a rejected JSON batch keeps the draft for correction without partially adding servers', async ({
+  page,
+}) => {
+  await login(page);
+  const initial: DashboardData = await (await page.request.get('/api/dashboard')).json();
+  const value = JSON.stringify([
+    { type: 'emby', name: '冲突后重试', primary: { url: 'https://json-retry.example.com' } },
+  ]);
+  await page.getByRole('button', { name: '从 JSON 添加', exact: true }).click();
+  await page.getByLabel('服务器配置').fill(value);
+  await page.route('**/api/servers/import', (route) =>
+    route.fulfill({ status: 409, json: { error: '服务器目录已更新，请刷新后重试' } }),
+  );
+  await page.getByRole('button', { name: '校验并导入', exact: true }).click();
+  await expect(page.getByRole('alert')).toHaveText('服务器目录已更新，请刷新后重试');
+  await expect(page.getByLabel('服务器配置')).toHaveValue(value);
+  await expect(page.getByRole('button', { name: '校验并导入', exact: true })).toBeEnabled();
+  expect(((await (await page.request.get('/api/dashboard')).json()) as DashboardData).servers).toEqual(
+    initial.servers,
+  );
+  await page.unroute('**/api/servers/import');
+  await page.getByRole('button', { name: '校验并导入', exact: true }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(page.locator('.toast')).toHaveText('已导入 1 台服务器');
+  await expect(page.locator('.server-card')).toHaveCount(initial.servers.length + 1);
 });

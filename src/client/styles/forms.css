@@ -376,6 +376,9 @@
   border-color: #f5dedf;
   color: #bd767d;
 }
+.json-import-error {
+  white-space: pre-line;
+}
 .message.success {
   background: #effaf5;
   border-color: #d7eee3;

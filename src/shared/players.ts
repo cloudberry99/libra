@@ -6,7 +6,7 @@ export const PLAYERS: { id: PlayerId; name: string; initial: string }[] = [
   { id: 'eplayerx', name: 'EplayerX', initial: 'E' },
   { id: 'rex', name: 'Rex', initial: 'R' },
   { id: 'hills', name: 'Hills', initial: 'H' },
-  { id: 'rodelplayer', name: '小幻播放器', initial: 'R' },
+  { id: 'rodelplayer', name: '小幻', initial: 'R' },
 ];
 export function base64url(value: string): string {
   const bytes = new TextEncoder().encode(value);

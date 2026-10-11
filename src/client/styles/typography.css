@@ -212,9 +212,8 @@
     width: 32px;
     height: 32px;
   }
-  .server-card-footer .icon-button {
-    width: 32px;
-    height: 32px;
+  .server-delete-button {
+    min-height: 44px;
   }
   .modal-footer .button {
     min-height: 44px;

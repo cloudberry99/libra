@@ -41,6 +41,7 @@ export interface DashboardData {
   revisions: { servers: string; iconLibraries: string };
 }
 export type CatalogWrite<T> = T & { catalogRevision: string };
+export type ServerImportResult = CatalogWrite<{ servers: ServerRecord[] }>;
 export interface IconLibrary {
   id: string;
   name: string;
