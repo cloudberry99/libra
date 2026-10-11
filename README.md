@@ -4,35 +4,20 @@
 
 一个部署在 Cloudflare Workers 上的私人 Emby 服务器管理台。集中维护账号和线路，生成播放器导入链接，或通过可订阅的 JSON 地址分发配置。界面为独立设计，支持手机与桌面。
 
-本项目与同名 **Libra 播放器**是独立项目。
-
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/cloudberry99/libra)
-
-![Libra 工作台，截图数据均为虚构示例](docs/workspace.png)
-
-## 功能
-
-- Emby 服务器的添加、编辑、删除、启停、搜索，以及单条 JSON 配置导入。
-- 主线路、最多 32 条备用线路、备注和可选 Logo；支持局域网、IPv6、端口与反向代理路径。
-- 从主线路登录获取服务器公布的备用线路，固定 `LibraManager` UA 和持久化 DeviceId，去重后合并到表单。
-- 可维护的图标库，支持跨图库搜索、分页选择 Logo 和手动输入图片 URL；可选 GitHub Token。
-- Libra、SenPlayer、EplayerX、Rex、Hills 和 RodelPlayer（小幻播放器）的 URL Scheme 导入。
-- 多条公开订阅：全部或指定服务器、随机或自定义后缀、停用、删除、更换后缀。
-- 订阅二维码、复制链接、下载二维码。二维码完全在浏览器本地生成。
-- 删除或更换订阅后释放旧后缀，允许重新分配。
-- 单管理员、强密码、加密 KV 存储、登录限流、HttpOnly 会话与跨站请求保护。
-- 未保存的表单在关闭或离开页面前确认；保存、复制和删除结果通过独立浮层提示。
-
 ## 部署到 Cloudflare
 
 需要一个 Cloudflare 账号。使用 Workers，无需 VPS、数据库服务或单独部署前端。
 
 ### 一键部署
 
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/cloudberry99/libra)
+
 1. 点击上面的部署按钮，关联 GitHub 账号并创建仓库。
 2. 设置 Worker 名称和 `APP_SECRET`。使用密码管理器生成至少 32 位随机密钥，推荐 64 位十六进制字符串；也可以在本机执行 `openssl rand -hex 32`。
 3. 构建命令填写 `npm run build`，部署命令填写 `npm run deploy`。Node.js 使用 24。
 4. 部署完成后访问 Worker 首页，输入同一份部署密钥，设置自己的管理密码。
+
+![Cloudflare 一键部署：选择 GitHub 账号，设置并保存至少 32 位的随机部署密钥](docs/cloudflare-deploy.png)
 
 KV 绑定名称为 `LIBRA_KV`。仓库中的配置没有任何账号 ID 或 KV ID，Wrangler 会在首次部署时自动创建并绑定 KV；以后部署复用已有绑定。参见 Cloudflare 的[资源自动配置说明](https://developers.cloudflare.com/workers/wrangler/configuration/#resource-provisioning)和[部署按钮说明](https://developers.cloudflare.com/workers/platform/deploy-buttons/)。
 
@@ -151,21 +136,6 @@ GET https://your-worker.workers.dev/<suffix>
 线路只接受完整 HTTP(S) 基础地址，禁止内嵌账号密码、查询参数、fragment、未编码空白和反斜杠。端口为 1–65535。域名大小写、默认端口、末尾斜杠会规范化；规范化后重复的线路保留第一条。备用线路应指向同一台可信 Emby 服务器，本项目不验证服务器身份或连通性。
 
 响应只包含上述客户端配置，不包含后台记录 ID、版本、启停状态或登录会话。
-
-## 播放器协议
-
-| 播放器      | 导入入口                           | 支持范围与说明                                                                          |
-| ----------- | ---------------------------------- | --------------------------------------------------------------------------------------- |
-| Libra       | `libra://import/server?v=1&data=…` | UTF-8 JSON → Base64URL（无填充）；保留所有线路和凭据，按 v1 规范排除 Logo               |
-| SenPlayer   | `senplayer://importserver?…`       | 服务器名称、备注、图标、账号、完整主地址及备用线路                                      |
-| EplayerX    | `eplayerx://add-or-update?…`       | 名称、备注、账号、主地址、备用线路；备用地址或名称含原始逗号/分号时提示手动处理         |
-| Rex         | `rex://import?…`                   | 主地址拆分为 scheme/host/port，附账号及编号备用线路；title 为主线路名称，默认「主线路」 |
-| Hills       | `hills://import?…`                 | 主地址拆分为 scheme/host/port，附账号和备用线路                                         |
-| RodelPlayer | `rodelplayer://import?…`           | 与 Hills 同类参数，界面名称为小幻播放器                                                 |
-
-Libra 适配依据使用者提供的 v1 协议，解析链接后由播放器展示添加表单。其余五种适配参考公开的 [emby-keepalive 协议生成逻辑](https://github.com/SolarisAA/emby-keepalive)，独立实现，不复制其界面或业务代码。Rex 的参数参考仓库的 [rexUrl 适配器](https://github.com/SolarisAA/emby-keepalive/blob/main/public/index.html#L918-L946)，未命名的备用线路使用「线路1」「线路2」等默认名称。
-
-Rex / Hills / RodelPlayer 已知参数未明确支持主线路的反向代理基础路径。本项目遇到 `/emby` 这类主线路时会提示手动导入，避免静默丢掉路径。其他播放器未定义的字段不会随意附加。六种 Scheme 均有编码测试，但没有在真实 iOS/Windows 播放器中自动验证；播放器版本可能影响接收行为。
 
 ## 安全与存储边界
 
